@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Runtime / PII
+data/
+out/
+*.db
+*.sqlite3
+
+# Escaneos reales y dumps de depuración
+baterias de prueba/
+scratch/
+*.pdf
+
+# Local tooling
+.superpowers/
+.grok/

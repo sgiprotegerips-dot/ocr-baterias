@@ -1,0 +1,16 @@
+.venv/
+.git/
+.agents/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.DS_Store
+data/
+out/
+baterias de prueba/
+deploy/
+*.pdf
+*.zip
+*.xlsx
