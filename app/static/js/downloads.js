@@ -7,25 +7,33 @@
 import { showToast } from "./components/toast.js";
 
 export async function openOfficialHtml(url) {
-  const res = await fetch(url, { credentials: "include" });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
-    throw new Error(err.detail || "No se pudo abrir el documento oficial");
-  }
-  const html = await res.text();
-  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-  const href = URL.createObjectURL(blob);
-  const win = window.open(href, "_blank", "noopener");
+  const win = window.open("", "_blank", "noopener");
   if (!win) {
-    const a = document.createElement("a");
-    a.href = href;
-    a.target = "_blank";
-    a.rel = "noopener";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    showToast("Permita ventanas emergentes para visualizar los informes.", "error");
+    return;
   }
-  setTimeout(() => URL.revokeObjectURL(href), 60_000);
+  win.document.open();
+  win.document.write(`
+    <!doctype html><html lang="es"><head><meta charset="utf-8"><title>Cargando informe...</title>
+    <style>body{font-family:sans-serif;padding:20px;text-align:center;}</style></head>
+    <body><h3>Cargando documento...</h3><p>Espere por favor.</p></body></html>
+  `);
+  win.document.close();
+
+  try {
+    const res = await fetch(url, { credentials: "include" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: `Error ${res.status}` }));
+      throw new Error(err.detail || "No se pudo abrir el documento oficial");
+    }
+    const html = await res.text();
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+  } catch (err) {
+    win.close();
+    throw err;
+  }
 }
 
 export async function downloadOfficialFile(url, fallbackName) {

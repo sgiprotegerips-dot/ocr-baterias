@@ -58,6 +58,14 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: bateria_tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://bateria-app:8000
+    depends_on:
+      - bateria-app
+
 volumes:
   postgres_data:
     driver: local

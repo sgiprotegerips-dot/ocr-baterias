@@ -13,6 +13,7 @@ from .qr_codec import (
     encode_payload,
     label_display_name,
     normalize_ficha,
+    render_qr_png_data_uri,
     render_qr_svg,
 )
 
@@ -130,14 +131,16 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
     for raw in fichas:
         ficha = normalize_ficha(raw)
         payload = encode_payload(ficha)
-        svg = render_qr_svg(payload)
+        png_uri = render_qr_png_data_uri(payload, scale=6, border=2)
         nombre = label_display_name(ficha["nombre"])
         forma = ficha["forma"] or "-"
         nac = ficha["fecha_nacimiento"] or ficha["anio_nacimiento"] or ""
         pages.append(
             f"""
 <article class="label">
-  <div class="qr">{svg}</div>
+  <div class="qr">
+    <img class="qr-img" src="{png_uri}" alt="QR" />
+  </div>
   <div class="meta">
     <div class="name">{_html(nombre)}</div>
     <div class="cc">CC { _html(ficha["cedula"]) }</div>
@@ -155,7 +158,15 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
   <meta charset="utf-8" />
   <title>Etiquetas QR 30×20 mm</title>
   <style>
-    @page {{ size: 30mm 20mm; margin: 0; }}
+    *, *:before, *:after {{
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }}
+    @page {{
+      size: 30mm 20mm;
+      margin: 0mm;
+    }}
     html, body {{
       margin: 0;
       padding: 0;
@@ -163,51 +174,122 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       height: 20mm;
       background: #fff;
       color: #000;
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, Helvetica, sans-serif;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }}
     .label {{
       width: 30mm;
       height: 20mm;
+      max-width: 30mm;
+      max-height: 20mm;
       box-sizing: border-box;
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 1.2mm;
-      padding: 1mm 1.2mm;
+      justify-content: flex-start;
+      gap: 1mm;
+      padding: 1.5mm 1mm;
+      page-break-inside: avoid;
+      break-inside: avoid;
       page-break-after: always;
       break-after: page;
       overflow: hidden;
+      background: #fff;
+    }}
+    .label:last-child {{
+      page-break-after: avoid;
+      break-after: avoid;
     }}
     .qr {{
-      width: 16mm;
-      height: 16mm;
-      flex: 0 0 16mm;
+      width: 15mm;
+      height: 15mm;
+      flex: 0 0 15mm;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
     }}
-    .qr svg {{
-      width: 16mm;
-      height: 16mm;
+    .qr-img {{
+      width: 15mm;
+      height: 15mm;
       display: block;
+      image-rendering: pixelated;
+      image-rendering: -moz-crisp-edges;
+      image-rendering: crisp-edges;
     }}
     .meta {{
       flex: 1 1 auto;
       min-width: 0;
-      line-height: 1.15;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.35mm;
+      line-height: 1.2;
+      overflow: hidden;
     }}
     .name {{
-      font-size: 5.4pt;
+      font-size: 5.5pt;
       font-weight: 700;
       text-transform: uppercase;
       white-space: nowrap;
       overflow: hidden;
+      color: #000;
+      letter-spacing: -0.01em;
     }}
     .cc {{
       font-size: 5.2pt;
       font-weight: 700;
-      letter-spacing: 0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      color: #000;
+      letter-spacing: -0.02em;
     }}
     .line {{
-      font-size: 4.6pt;
+      font-size: 4.8pt;
       font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      color: #111;
+      letter-spacing: -0.01em;
+    }}
+
+    @media print {{
+      html, body {{
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 30mm !important;
+        height: 20mm !important;
+        overflow: hidden !important;
+      }}
+      .label {{
+        width: 30mm !important;
+        height: 20mm !important;
+        max-width: 30mm !important;
+        max-height: 20mm !important;
+        padding: 1.5mm 1mm !important;
+        gap: 1mm !important;
+        page-break-inside: avoid !important;
+        break-inside: avoid !important;
+        page-break-after: always !important;
+        break-after: page !important;
+      }}
+      .label:last-child {{
+        page-break-after: avoid !important;
+        break-after: avoid !important;
+      }}
+      .qr {{
+        width: 15mm !important;
+        height: 15mm !important;
+        flex: 0 0 15mm !important;
+      }}
+      .qr-img {{
+        width: 15mm !important;
+        height: 15mm !important;
+      }}
+      .name {{ font-size: 5.5pt !important; }}
+      .cc {{ font-size: 5.2pt !important; }}
+      .line {{ font-size: 4.8pt !important; }}
     }}
   </style>
 </head>

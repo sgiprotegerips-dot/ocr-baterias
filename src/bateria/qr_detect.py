@@ -18,33 +18,45 @@ def _decode_image(img: np.ndarray) -> Optional[str]:
     else:
         gray = img
 
-    detector = cv2.QRCodeDetector()
+    detectors = []
+    if hasattr(cv2, "QRCodeDetectorAruco"):
+        try:
+            detectors.append(cv2.QRCodeDetectorAruco())
+        except Exception:
+            pass
+    detectors.append(cv2.QRCodeDetector())
+
     variants = [gray]
     h, w = gray.shape[:2]
-    # Esquina superior (sitio típico del sticker en el consentimiento)
+    # Esquina superior derecha (sitio estándar del sticker 30×20 en el consentimiento)
+    variants.append(gray[: max(1, int(h * 0.45)), max(0, int(w * 0.45)) :])
+    # Esquina superior izquierda
+    variants.append(gray[: max(1, int(h * 0.45)), : max(1, int(w * 0.55)) :])
+    # Franja superior completa
     variants.append(gray[: max(1, int(h * 0.45)), :])
-    variants.append(gray[: max(1, int(h * 0.45)), max(0, int(w * 0.55)) :])
-    # Umbral por si el térmico queda gris
+    # Binarización Otsu para resaltar contraste térmico tenue
     _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     variants.append(bw)
+    variants.append(bw[: max(1, int(h * 0.45)), max(0, int(w * 0.45)) :])
 
-    for candidate in variants:
-        if candidate.size == 0:
-            continue
-        try:
-            data, points, _ = detector.detectAndDecode(candidate)
-        except cv2.error:
-            continue
-        if data:
-            return data
-        try:
-            ok, decoded, _pts, _ = detector.detectAndDecodeMulti(candidate)
-        except (cv2.error, ValueError):
-            ok, decoded = False, None
-        if ok and decoded is not None:
-            for item in decoded:
-                if item:
-                    return item
+    for detector in detectors:
+        for candidate in variants:
+            if candidate.size == 0:
+                continue
+            try:
+                data, points, _ = detector.detectAndDecode(candidate)
+            except cv2.error:
+                continue
+            if data and data.strip():
+                return data.strip()
+            try:
+                ok, decoded, _pts, _ = detector.detectAndDecodeMulti(candidate)
+            except (cv2.error, ValueError):
+                ok, decoded = False, None
+            if ok and decoded is not None:
+                for item in decoded:
+                    if item and item.strip():
+                        return item.strip()
     return None
 
 

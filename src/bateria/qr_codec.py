@@ -85,7 +85,11 @@ def normalize_ficha(data: Optional[Dict[str, Any]]) -> Dict[str, str]:
 
 def encode_payload(data: Dict[str, Any]) -> str:
     ficha = normalize_ficha(data)
-    return PREFIX + "|" + "|".join(ficha[k] for k in FICHA_FIELDS)
+    payload = PREFIX + "|" + "|".join(ficha[k] for k in FICHA_FIELDS)
+    # Strip trailing empty pipes to compress the payload
+    while payload.endswith("|"):
+        payload = payload[:-1]
+    return payload
 
 
 def decode_payload(raw: Optional[str]) -> Optional[Dict[str, str]]:
@@ -127,11 +131,19 @@ def label_display_name(nombre: str) -> str:
     return " ".join(parts) or "SIN NOMBRE"
 
 
+def render_qr_png_data_uri(payload: str, scale: int = 6, border: int = 2) -> str:
+    import segno
+
+    qr = segno.make(payload, error="l")
+    return qr.png_data_uri(scale=scale, border=border)
+
+
 def render_qr_svg(payload: str) -> str:
     import segno
 
-    qr = segno.make(payload, error="m")
-    return qr.svg_inline(scale=4, border=1)
+    qr = segno.make(payload, error="l")
+    svg = qr.svg_inline(omitsize=True, border=2, light="#fff")
+    return svg.replace("<svg ", '<svg shape-rendering="crispEdges" ')
 
 
 def render_qr_bgr(payload: str, box_px: int = 180):
@@ -139,7 +151,7 @@ def render_qr_bgr(payload: str, box_px: int = 180):
     import numpy as np
     import segno
 
-    qr = segno.make(payload, error="m")
+    qr = segno.make(payload, error="l")
     matrix = np.array(qr.matrix, dtype=np.uint8)
     padded = np.pad(matrix, 2, constant_values=0)
     h, w = padded.shape

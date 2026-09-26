@@ -4257,11 +4257,66 @@ body {
   cursor: pointer;
 }
 
-.etq-count {
-  margin-left: auto;
-  font-size: 0.8rem;
-  color: var(--text-muted);
+.etq-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--bg-card-elevated);
+  padding: 0.2rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.etq-chip {
+  background: transparent;
+  border: none;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
   font-weight: 600;
+  padding: 0.35rem 0.65rem;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.etq-chip:hover {
+  color: var(--text-main);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.etq-chip.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.etq-search-wrap {
+  display: flex;
+  align-items: center;
+}
+
+.etq-search-wrap input {
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  padding: 0.45rem 0.75rem;
+  background: var(--bg-card-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  width: 220px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.etq-search-wrap input:focus {
+  border-color: var(--primary);
+}
+
+.etq-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
 }
 
 .etq-layout {
@@ -4371,12 +4426,17 @@ body {
 }
 
 .etq-preview-frame {
-  width: 30mm;
-  height: 20mm;
-  border: 1px dashed var(--border);
+  width: 100%;
+  max-width: 240px;
+  aspect-ratio: 30 / 20;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: #fff;
   display: block;
   margin: 0 0 0.75rem;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
 .etq-fieldset {

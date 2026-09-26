@@ -136,15 +136,42 @@ function emptyForm() {
   return data;
 }
 
-function openPrintHtml(html) {
-  const w = window.open("", "_blank", "noopener,noreferrer,width=420,height=320");
-  if (!w) {
-    showToast("Permita ventanas emergentes para imprimir las etiquetas.", "error");
-    return;
+async function openPrintHtmlAsync(fetchPromise, labelCount = 0) {
+  const countStr = labelCount > 0 ? `${labelCount} etiqueta${labelCount > 1 ? "s" : ""}` : "etiquetas";
+  showToast(`Preparando ${countStr} para impresión...`, "info");
+  try {
+    const html = await fetchPromise;
+    
+    let iframe = document.getElementById('print-iframe');
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.id = 'print-iframe';
+      // Hide visually but keep in render tree so print works across all browsers
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+    }
+    
+    iframe.contentWindow.document.open();
+    iframe.contentWindow.document.write(html);
+    iframe.contentWindow.document.close();
+
+    // Disparo explícito y confiable para que nunca falle la llamada a print()
+    setTimeout(() => {
+      try {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+      } catch (e) {
+        console.error("Error al invocar print() en iframe:", e);
+      }
+    }, 350);
+  } catch (err) {
+    showToast(err.message, "error");
   }
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
 }
 
 export async function renderEtiquetasView(container, state, callbacks = {}) {
@@ -177,22 +204,38 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       <section class="etq-toolbar">
         <a class="btn-action ghost" href="/static/plantillas/importador_etiquetas_qr.xlsx" download="importador_etiquetas_qr.xlsx" title="Excel oficial: 25 columnas de la FICHA DATOS GENERALES">
           ${svgIcon("excel", 14)}
-          <span>Descargar plantilla FICHA DATOS GENERALES</span>
+          <span>Plantilla Excel</span>
         </a>
         <label class="btn-action primary-solid etq-import-btn ${ctxReady ? "" : "is-disabled"}">
           ${svgIcon("upload", 14)}
-          <span>Importar FICHA DATOS GENERALES</span>
+          <span>Importar nómina</span>
           <input type="file" id="etq-excel-input" accept=".xlsx,.xlsm" hidden ${ctxReady ? "" : "disabled"} />
         </label>
-        <button type="button" class="btn-action ghost" id="etq-print-selected" ${ctxReady ? "" : "disabled"}>
-          ${svgIcon("file-text", 14)}
-          <span>Imprimir seleccionadas</span>
-        </button>
-        <button type="button" class="btn-action ghost" id="etq-print-all" ${ctxReady ? "" : "disabled"}>
-          ${svgIcon("layers", 14)}
-          <span>Imprimir toda la nómina</span>
-        </button>
-        <span class="etq-count" id="etq-count">0 en nómina</span>
+        
+        <div class="etq-filter-group">
+          <button type="button" class="etq-chip is-active" id="etq-chip-all" data-forma="">Todas (<span id="etq-cnt-all">0</span>)</button>
+          <button type="button" class="etq-chip" id="etq-chip-a" data-forma="A">Forma A (<span id="etq-cnt-a">0</span>)</button>
+          <button type="button" class="etq-chip" id="etq-chip-b" data-forma="B">Forma B (<span id="etq-cnt-b">0</span>)</button>
+        </div>
+
+        <div class="etq-search-wrap">
+          <input type="text" id="etq-search-input" placeholder="Buscar cédula o nombre..." autocomplete="off" />
+        </div>
+
+        <div class="etq-actions-right">
+          <button type="button" class="btn-action ghost" id="etq-select-batch50" title="Selecciona hasta 50 trabajadores para imprimir en rollo" ${ctxReady ? "" : "disabled"}>
+            ${svgIcon("check-square", 14)}
+            <span>Sel. 50</span>
+          </button>
+          <button type="button" class="btn-action ghost" id="etq-print-selected" disabled>
+            ${svgIcon("file-text", 14)}
+            <span id="etq-lbl-print-sel">Imprimir seleccionadas</span>
+          </button>
+          <button type="button" class="btn-action primary-solid" id="etq-print-all" ${ctxReady ? "" : "disabled"}>
+            ${svgIcon("layers", 14)}
+            <span id="etq-lbl-print-all">Imprimir toda la nómina</span>
+          </button>
+        </div>
       </section>
 
       <div class="etq-layout">
@@ -322,8 +365,60 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     return data;
   };
 
+  let activeFormaFilter = "";
+  let searchQuery = "";
+
   const selectedCedulas = () =>
     [...container.querySelectorAll(".etq-row-check:checked")].map((el) => el.value);
+
+  const getFilteredNomina = () => {
+    return nomina.filter((t) => {
+      const forma = (t.forma || t.ficha?.forma || "").toUpperCase();
+      if (activeFormaFilter && forma !== activeFormaFilter) return false;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        const ced = (t.cedula || "").toLowerCase();
+        const nom = (t.nombre_completo || t.nombre || t.ficha?.nombre || "").toLowerCase();
+        const car = (t.cargo || t.ficha?.cargo || "").toLowerCase();
+        if (!ced.includes(q) && !nom.includes(q) && !car.includes(q)) return false;
+      }
+      return true;
+    });
+  };
+
+  const updateToolbarCounts = () => {
+    const total = nomina.length;
+    const cntA = nomina.filter((t) => (t.forma || t.ficha?.forma || "").toUpperCase() === "A").length;
+    const cntB = nomina.filter((t) => (t.forma || t.ficha?.forma || "").toUpperCase() === "B").length;
+
+    const elAll = container.querySelector("#etq-cnt-all");
+    const elA = container.querySelector("#etq-cnt-a");
+    const elB = container.querySelector("#etq-cnt-b");
+    if (elAll) elAll.textContent = total;
+    if (elA) elA.textContent = cntA;
+    if (elB) elB.textContent = cntB;
+
+    const lblAll = container.querySelector("#etq-lbl-print-all");
+    if (lblAll) {
+      if (activeFormaFilter === "A") {
+        lblAll.textContent = `Imprimir Forma A (${cntA})`;
+      } else if (activeFormaFilter === "B") {
+        lblAll.textContent = `Imprimir Forma B (${cntB})`;
+      } else {
+        lblAll.textContent = `Imprimir toda la nómina (${total})`;
+      }
+    }
+  };
+
+  const updateSelectionState = () => {
+    const ceds = selectedCedulas();
+    const btnSel = container.querySelector("#etq-print-selected");
+    const lblSel = container.querySelector("#etq-lbl-print-sel");
+    if (btnSel && lblSel) {
+      btnSel.disabled = ceds.length === 0;
+      lblSel.textContent = ceds.length > 0 ? `Imprimir seleccionadas (${ceds.length})` : "Imprimir seleccionadas";
+    }
+  };
 
   const showPreview = async (cedula) => {
     if (!medicionId || !cedula) return;
@@ -338,13 +433,18 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
   };
 
   const renderRows = () => {
-    container.querySelector("#etq-count").textContent = `${nomina.length} en nómina`;
+    updateToolbarCounts();
+    const filtered = getFilteredNomina();
     const colCount = TABLE_COLUMNS.length + 1;
-    if (!nomina.length) {
-      tbody.innerHTML = `<tr><td colspan="${colCount}" class="text-center">Nómina vacía. Importe el Excel o registre a mano la primera persona.</td></tr>`;
+    if (!filtered.length) {
+      const msg = nomina.length === 0
+        ? "Nómina vacía. Importe el Excel o registre a mano la primera persona."
+        : "No hay trabajadores que coincidan con el filtro o búsqueda actual.";
+      tbody.innerHTML = `<tr><td colspan="${colCount}" class="text-center">${msg}</td></tr>`;
+      updateSelectionState();
       return;
     }
-    tbody.innerHTML = nomina
+    tbody.innerHTML = filtered
       .map((t) => {
         const cells = TABLE_COLUMNS.map((c) => {
           const val = cellValue(t, c.key);
@@ -359,6 +459,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
           </tr>`;
       })
       .join("");
+    updateSelectionState();
   };
 
   const reload = async () => {
@@ -381,6 +482,10 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
   tbody.addEventListener("click", async (ev) => {
     const tr = ev.target.closest("tr[data-cedula]");
     if (!tr) return;
+    if (ev.target.classList.contains("etq-row-check")) {
+      updateSelectionState();
+      return;
+    }
     const ced = tr.dataset.cedula;
     const row = nomina.find((t) => t.cedula === ced);
     if (row) fillForm({ ...row, ...(row.ficha || {}) });
@@ -389,11 +494,49 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     await showPreview(ced);
   });
 
+  tbody.addEventListener("change", (ev) => {
+    if (ev.target.classList.contains("etq-row-check")) {
+      updateSelectionState();
+    }
+  });
+
+  container.querySelectorAll(".etq-chip").forEach((chip) => {
+    chip.onclick = () => {
+      container.querySelectorAll(".etq-chip").forEach((c) => c.classList.remove("is-active"));
+      chip.classList.add("is-active");
+      activeFormaFilter = chip.dataset.forma || "";
+      renderRows();
+    };
+  });
+
+  const searchInput = container.querySelector("#etq-search-input");
+  if (searchInput) {
+    searchInput.oninput = (ev) => {
+      searchQuery = ev.target.value.trim();
+      renderRows();
+    };
+  }
+
   container.querySelector("#etq-check-all").onchange = (ev) => {
     container.querySelectorAll(".etq-row-check").forEach((c) => {
       c.checked = ev.target.checked;
     });
+    updateSelectionState();
   };
+
+  const btnBatch50 = container.querySelector("#etq-select-batch50");
+  if (btnBatch50) {
+    btnBatch50.onclick = () => {
+      const checks = [...container.querySelectorAll(".etq-row-check")];
+      if (!checks.length) return;
+      checks.forEach((c, idx) => {
+        c.checked = idx < 50;
+      });
+      updateSelectionState();
+      const count = Math.min(50, checks.length);
+      showToast(`${count} trabajadores seleccionados para imprimir rollo.`, "info");
+    };
+  }
 
   container.querySelector("#etq-excel-input").onchange = async (ev) => {
     const file = ev.target.files?.[0];
@@ -412,35 +555,46 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     }
   };
 
-  container.querySelector("#etq-print-all").onclick = async () => {
+  container.querySelector("#etq-print-all").onclick = () => {
     if (!medicionId) return;
-    try {
-      openPrintHtml(await fetchNominaPrintHtml(medicionId, null));
-    } catch (err) {
-      showToast(err.message, "error");
+    const cnt = activeFormaFilter === "A"
+      ? nomina.filter((t) => (t.forma || t.ficha?.forma || "").toUpperCase() === "A").length
+      : activeFormaFilter === "B"
+      ? nomina.filter((t) => (t.forma || t.ficha?.forma || "").toUpperCase() === "B").length
+      : nomina.length;
+
+    if (cnt === 0) {
+      showToast("No hay trabajadores para imprimir.", "error");
+      return;
     }
+
+    const desc = activeFormaFilter ? `FORMA ${activeFormaFilter} (${cnt} etiquetas)` : `toda la nómina (${cnt} etiquetas)`;
+    if (cnt > 30) {
+      if (!confirm(`Se van a preparar ${desc} para la impresora térmica Zebra. ¿Desea continuar?`)) {
+        return;
+      }
+    }
+    openPrintHtmlAsync(fetchNominaPrintHtml(medicionId, null, activeFormaFilter || null), cnt).catch(err => {
+      showToast(err.message, "error");
+    });
   };
 
-  container.querySelector("#etq-print-selected").onclick = async () => {
+  container.querySelector("#etq-print-selected").onclick = () => {
     const ceds = selectedCedulas();
     if (!ceds.length) {
       showToast("Seleccione al menos una fila.", "error");
       return;
     }
-    try {
-      openPrintHtml(await fetchNominaPrintHtml(medicionId, ceds));
-    } catch (err) {
+    openPrintHtmlAsync(fetchNominaPrintHtml(medicionId, ceds), ceds.length).catch(err => {
       showToast(err.message, "error");
-    }
+    });
   };
 
-  btnPrintOne.onclick = async () => {
+  btnPrintOne.onclick = () => {
     if (!currentCedula || !medicionId) return;
-    try {
-      openPrintHtml(await fetchOneLabelHtml(medicionId, currentCedula));
-    } catch (err) {
+    openPrintHtmlAsync(fetchOneLabelHtml(medicionId, currentCedula)).catch(err => {
       showToast(err.message, "error");
-    }
+    });
   };
 
   container.querySelector("#etq-reset").onclick = () => {
@@ -462,13 +616,33 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       showToast("Cédula y nombre son obligatorios.", "error");
       return;
     }
+
     try {
+      showToast("Guardando persona...", "info");
       const saved = await createNominaManual(medicionId, data);
       showToast(`Guardado ${saved.nombre}. Imprimiendo etiqueta 30×20 mm.`, "info");
       await reload();
       currentCedula = saved.cedula;
       await showPreview(saved.cedula);
-      openPrintHtml(await fetchOneLabelHtml(medicionId, saved.cedula));
+      
+      const html = await fetchOneLabelHtml(medicionId, saved.cedula);
+      
+      let iframe = document.getElementById('print-iframe');
+      if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.id = 'print-iframe';
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        document.body.appendChild(iframe);
+      }
+      
+      iframe.contentWindow.document.open();
+      iframe.contentWindow.document.write(html);
+      iframe.contentWindow.document.close();
     } catch (err) {
       showToast(err.message, "error");
     }

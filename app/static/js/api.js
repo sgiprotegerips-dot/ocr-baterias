@@ -266,11 +266,11 @@ export async function importNominaExcel(medicionId, file) {
   return await res.json();
 }
 
-export async function fetchNominaPrintHtml(medicionId, cedulas = null) {
+export async function fetchNominaPrintHtml(medicionId, cedulas = null, forma = null) {
   const res = await fetch(`/api/mediciones/${medicionId}/nomina/print-html`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cedulas }),
+    body: JSON.stringify({ cedulas, forma }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Error generando etiquetas" }));

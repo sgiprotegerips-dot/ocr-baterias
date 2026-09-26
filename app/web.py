@@ -282,6 +282,7 @@ class FichaNominaIn(BaseModel):
 
 class PrintNominaIn(BaseModel):
     cedulas: Optional[List[str]] = None
+    forma: Optional[str] = None
 
 
 # -----------------------------------------------------------------------------
@@ -801,8 +802,15 @@ def _upsert_nomina_row(session, medicion_id: str, ficha: Dict[str, Any], origen:
     return row
 
 
-def _nomina_fichas(session, medicion_id: str, cedulas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def _nomina_fichas(
+    session,
+    medicion_id: str,
+    cedulas: Optional[List[str]] = None,
+    forma: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     q = session.query(TrabajadorNomina).filter_by(medicion_id=medicion_id)
+    if forma and str(forma).strip():
+        q = q.filter(TrabajadorNomina.forma == str(forma).strip().upper())
     if cedulas:
         wanted = {str(c).strip() for c in cedulas if str(c).strip()}
         q = q.filter(TrabajadorNomina.cedula.in_(wanted))
@@ -931,7 +939,8 @@ def api_print_nomina_html(
         if not med:
             raise HTTPException(status_code=404, detail="Medición no encontrada")
         cedulas = body.cedulas if body else None
-        fichas = _nomina_fichas(session, medicion_id, cedulas)
+        forma = body.forma if body else None
+        fichas = _nomina_fichas(session, medicion_id, cedulas=cedulas, forma=forma)
         if not fichas:
             raise HTTPException(status_code=404, detail="No hay trabajadores para imprimir.")
         return HTMLResponse(render_labels_html(fichas))
