@@ -10,11 +10,17 @@ from openpyxl import load_workbook
 
 from .qr_codec import (
     FICHA_FIELDS,
+    encode_compact_payload,
     encode_payload,
     label_display_name,
     normalize_ficha,
     render_qr_png_data_uri,
     render_qr_svg,
+)
+from .label_pdf import (
+    generate_roll_labels_pdf,
+    generate_sheet_labels_pdf,
+    generate_single_label_pdf,
 )
 
 HEADER_MAP = {
@@ -130,11 +136,11 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
     pages = []
     for raw in fichas:
         ficha = normalize_ficha(raw)
-        payload = encode_payload(ficha)
-        png_uri = render_qr_png_data_uri(payload, scale=6, border=2)
+        payload = encode_compact_payload(ficha)
+        png_uri = render_qr_png_data_uri(payload, scale=8, border=1)
         nombre = label_display_name(ficha["nombre"])
-        forma = ficha["forma"] or "-"
-        nac = ficha["fecha_nacimiento"] or ficha["anio_nacimiento"] or ""
+        forma = ficha["forma"] or "A"
+        nac = ficha.get("fecha_nacimiento") or ficha.get("anio_nacimiento") or ""
         pages.append(
             f"""
 <article class="label">
@@ -142,10 +148,10 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
     <img class="qr-img" src="{png_uri}" alt="QR" />
   </div>
   <div class="meta">
-    <div class="name">{_html(nombre)}</div>
+    <div class="line" style="font-weight:700;font-size:5.6pt;">FORMA { _html(forma) }</div>
     <div class="cc">CC { _html(ficha["cedula"]) }</div>
-    <div class="line">FORMA { _html(forma) }</div>
-    <div class="line">NAC { _html(nac) }</div>
+    <div class="name">{_html(nombre)}</div>
+    <div class="line" style="font-size:4.6pt;color:#444;">{ _html(nac) }</div>
   </div>
 </article>
 """
@@ -202,17 +208,17 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       break-after: avoid;
     }}
     .qr {{
-      width: 15mm;
-      height: 15mm;
-      flex: 0 0 15mm;
+      width: 17.5mm;
+      height: 17.5mm;
+      flex: 0 0 17.5mm;
       display: flex;
       align-items: center;
       justify-content: center;
       background: #fff;
     }}
     .qr-img {{
-      width: 15mm;
-      height: 15mm;
+      width: 17.5mm;
+      height: 17.5mm;
       display: block;
       image-rendering: pixelated;
       image-rendering: -moz-crisp-edges;
@@ -224,12 +230,12 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       display: flex;
       flex-direction: column;
       justify-content: center;
-      gap: 0.35mm;
-      line-height: 1.2;
+      gap: 0.3mm;
+      line-height: 1.15;
       overflow: hidden;
     }}
     .name {{
-      font-size: 5.5pt;
+      font-size: 4.8pt;
       font-weight: 700;
       text-transform: uppercase;
       white-space: nowrap;
@@ -238,7 +244,7 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       letter-spacing: -0.01em;
     }}
     .cc {{
-      font-size: 5.2pt;
+      font-size: 5.0pt;
       font-weight: 700;
       white-space: nowrap;
       overflow: hidden;
@@ -246,11 +252,11 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       letter-spacing: -0.02em;
     }}
     .line {{
-      font-size: 4.8pt;
-      font-weight: 600;
+      font-size: 5.4pt;
+      font-weight: 700;
       white-space: nowrap;
       overflow: hidden;
-      color: #111;
+      color: #000;
       letter-spacing: -0.01em;
     }}
 
@@ -267,8 +273,8 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
         height: 20mm !important;
         max-width: 30mm !important;
         max-height: 20mm !important;
-        padding: 1.5mm 1mm !important;
-        gap: 1mm !important;
+        padding: 1.2mm 1mm !important;
+        gap: 0.8mm !important;
         page-break-inside: avoid !important;
         break-inside: avoid !important;
         page-break-after: always !important;
@@ -279,23 +285,33 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
         break-after: avoid !important;
       }}
       .qr {{
-        width: 15mm !important;
-        height: 15mm !important;
-        flex: 0 0 15mm !important;
+        width: 17.5mm !important;
+        height: 17.5mm !important;
+        flex: 0 0 17.5mm !important;
       }}
       .qr-img {{
-        width: 15mm !important;
-        height: 15mm !important;
+        width: 17.5mm !important;
+        height: 17.5mm !important;
       }}
-      .name {{ font-size: 5.5pt !important; }}
-      .cc {{ font-size: 5.2pt !important; }}
-      .line {{ font-size: 4.8pt !important; }}
+      .name {{ font-size: 4.8pt !important; }}
+      .cc {{ font-size: 5.0pt !important; }}
+      .line {{ font-size: 5.4pt !important; }}
     }}
   </style>
 </head>
 <body>
 {body}
-<script>window.addEventListener("load", function() {{ setTimeout(function() {{ window.print(); }}, 250); }});</script>
+<script>
+  function doPrint() {{
+    window.focus();
+    try {{ window.print(); }} catch (e) {{}}
+  }}
+  if (document.readyState === "complete") {{
+    setTimeout(doPrint, 200);
+  }} else {{
+    window.addEventListener("load", function() {{ setTimeout(doPrint, 200); }});
+  }}
+</script>
 </body>
 </html>
 """

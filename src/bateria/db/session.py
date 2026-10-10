@@ -23,17 +23,21 @@ DEFAULT_SQLITE_SYNC = f"sqlite:///{DATA_DIR / 'bateria_sst.db'}"
 raw_url = os.environ.get("DATABASE_URL")
 if raw_url:
     ASYNC_DATABASE_URL = raw_url
-    # Generar versión sync para scripts o herramientas que lo requieran
     if "+asyncpg" in raw_url:
-        SYNC_DATABASE_URL = raw_url.replace("+asyncpg", "")
+        SYNC_DATABASE_URL = raw_url.replace("+asyncpg", "+psycopg2")
     elif "+aiosqlite" in raw_url:
         SYNC_DATABASE_URL = raw_url.replace("+aiosqlite", "")
+    elif raw_url.startswith("postgresql://"):
+        SYNC_DATABASE_URL = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     else:
         SYNC_DATABASE_URL = raw_url
 else:
     # Intentar verificar si postgres local está accesible, de lo contrario SQLite
     ASYNC_DATABASE_URL = os.environ.get("DATABASE_URL_ASYNC", DEFAULT_SQLITE_ASYNC)
     SYNC_DATABASE_URL = os.environ.get("DATABASE_URL_SYNC", DEFAULT_SQLITE_SYNC)
+
+if SYNC_DATABASE_URL.startswith("postgresql://"):
+    SYNC_DATABASE_URL = SYNC_DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 # Base declarativa de modelos
 Base = declarative_base()

@@ -279,10 +279,42 @@ export async function fetchNominaPrintHtml(medicionId, cedulas = null, forma = n
   return await res.text();
 }
 
+export async function fetchNominaPrintPdfBlob(medicionId, cedulas = null, forma = null) {
+  const res = await fetch(`/api/mediciones/${medicionId}/nomina/print-pdf`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cedulas, forma }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Error generando PDF de etiquetas" }));
+    throw new Error(err.detail || "Error generando PDF de etiquetas");
+  }
+  return await res.blob();
+}
+
+export async function fetchNominaSheetPdfBlob(medicionId, cedulas = null, forma = null) {
+  const res = await fetch(`/api/mediciones/${medicionId}/nomina/sheet-pdf`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cedulas, forma }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Error generando pliego de etiquetas" }));
+    throw new Error(err.detail || "Error generando pliego de etiquetas");
+  }
+  return await res.blob();
+}
+
 export async function fetchOneLabelHtml(medicionId, cedula) {
   const res = await fetch(`/api/mediciones/${medicionId}/nomina/${encodeURIComponent(cedula)}/etiqueta.html`);
   if (!res.ok) throw new Error("Error generando la etiqueta");
   return await res.text();
+}
+
+export async function fetchOneLabelPdfBlob(medicionId, cedula) {
+  const res = await fetch(`/api/mediciones/${medicionId}/nomina/${encodeURIComponent(cedula)}/etiqueta.pdf`);
+  if (!res.ok) throw new Error("Error generando el PDF de la etiqueta");
+  return await res.blob();
 }
 
 export async function deleteNominaRow(medicionId, cedula) {
@@ -292,6 +324,21 @@ export async function deleteNominaRow(medicionId, cedula) {
   if (!res.ok) throw new Error("Error eliminando de la nómina");
   return await res.json();
 }
+
+export async function deleteNominaBatch(medicionId, cedulas = null) {
+  const body = cedulas && cedulas.length ? { cedulas } : {};
+  const res = await fetch(`/api/mediciones/${medicionId}/nomina`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Error eliminando de la nómina" }));
+    throw new Error(err.detail || "Error eliminando de la nómina");
+  }
+  return await res.json();
+}
+
 
 export async function fetchOcrEngines() {
   const res = await fetch("/api/ocr/engines");

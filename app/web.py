@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import fitz
 from fastapi import (
+    Body,
     Cookie,
     Depends,
     FastAPI,
@@ -56,7 +57,14 @@ from bateria.db.models import (
     TrabajadorNomina,
     Usuario,
 )
-from bateria.nomina import ficha_to_worker_kwargs, parse_ficha_excel, render_labels_html
+from bateria.nomina import (
+    ficha_to_worker_kwargs,
+    generate_roll_labels_pdf,
+    generate_sheet_labels_pdf,
+    generate_single_label_pdf,
+    parse_ficha_excel,
+    render_labels_html,
+)
 from bateria.db.session import SyncSessionLocal, get_db
 from bateria.export import export_workbook
 from bateria.pipeline import generate_ordered_pdf, process_pdf
@@ -285,6 +293,10 @@ class PrintNominaIn(BaseModel):
     forma: Optional[str] = None
 
 
+class DeleteNominaIn(BaseModel):
+    cedulas: Optional[List[str]] = None
+
+
 # -----------------------------------------------------------------------------
 # Rutas Principales y Salud
 # -----------------------------------------------------------------------------
@@ -415,7 +427,7 @@ def api_onboarding_cliente(body: OnboardingClienteIn, current_user: AdminUser):
 
 
 @app.post("/api/onboarding/campana")
-def api_onboarding_campana(body: OnboardingCampanaIn, current_user: PsicoUser):
+def api_onboarding_campana(body: OnboardingCampanaIn, current_user: StaffUser):
     """Asistente de la psicóloga: abre una medición sobre una empresa ya registrada."""
     session = SyncSessionLocal()
     try:
@@ -532,7 +544,7 @@ def api_get_empresa_mediciones(empresa_id: str, current_user: AuthUser):
 def api_create_medicion(
     empresa_id: str,
     body: MedicionIn,
-    current_user: PsicoUser,
+    current_user: StaffUser,
 ):
     """Crea una nueva campaña de medición para una empresa."""
     session = SyncSessionLocal()
@@ -542,14 +554,14 @@ def api_create_medicion(
             raise HTTPException(status_code=404, detail="Empresa no encontrada")
 
         psico_id = body.psicologa_id
-        if not psico_id and current_user:
+        if not psico_id and current_user and current_user.rol == "psicologa":
             psico_id = current_user.id
         if not psico_id:
-            default_psico = session.query(Usuario).filter_by(rol="psicologa").first()
+            default_psico = session.query(Usuario).filter_by(rol="psicologa", activo=True).first()
             if default_psico:
                 psico_id = default_psico.id
             else:
-                raise HTTPException(status_code=400, detail="Debe asignar una psicóloga responsable.")
+                raise HTTPException(status_code=400, detail="Debe asignar una psicóloga responsable con Licencia SST.")
 
         codigo_campana = body.codigo_campana or f"MED-{body.anio or 2026}-{empresa.nit[:4]}-{uuid.uuid4().hex[:4].upper()}"
         nombre = body.nombre or f"Evaluación Batería de Riesgo Psicosocial {body.anio or 2026}"
@@ -927,23 +939,104 @@ async def api_import_nomina_excel(
         session.close()
 
 
+@app.get("/api/mediciones/{medicion_id}/nomina/print-html", response_class=HTMLResponse)
 @app.post("/api/mediciones/{medicion_id}/nomina/print-html", response_class=HTMLResponse)
 def api_print_nomina_html(
     medicion_id: str,
     current_user: CargaUser,
-    body: Optional[PrintNominaIn] = None,
+    forma: Optional[str] = Query(None),
+    cedulas: Optional[str] = Query(None),
+    body: Optional[PrintNominaIn] = Body(None),
 ):
     session = SyncSessionLocal()
     try:
         med = session.query(Medicion).filter_by(id=medicion_id).first()
         if not med:
             raise HTTPException(status_code=404, detail="Medición no encontrada")
-        cedulas = body.cedulas if body else None
-        forma = body.forma if body else None
-        fichas = _nomina_fichas(session, medicion_id, cedulas=cedulas, forma=forma)
+        target_cedulas = None
+        if body and body.cedulas:
+            target_cedulas = body.cedulas
+        elif cedulas:
+            target_cedulas = [c.strip() for c in cedulas.split(",") if c.strip()]
+        target_forma = (body.forma if body and body.forma else forma) or None
+        fichas = _nomina_fichas(session, medicion_id, cedulas=target_cedulas, forma=target_forma)
         if not fichas:
             raise HTTPException(status_code=404, detail="No hay trabajadores para imprimir.")
         return HTMLResponse(render_labels_html(fichas))
+    finally:
+        session.close()
+
+
+@app.get("/api/mediciones/{medicion_id}/nomina/print-pdf")
+@app.post("/api/mediciones/{medicion_id}/nomina/print-pdf")
+def api_print_nomina_pdf(
+    medicion_id: str,
+    current_user: CargaUser,
+    forma: Optional[str] = Query(None),
+    cedulas: Optional[str] = Query(None),
+    body: Optional[PrintNominaIn] = Body(None),
+):
+    """Genera PDF multi-página para rollo térmico continuo 30×20 mm (Zebra, TSC, etc.).
+    Admite tanto peticiones GET (?forma=A&cedulas=123,456) como POST ({ forma, cedulas }).
+    """
+    session = SyncSessionLocal()
+    try:
+        med = session.query(Medicion).filter_by(id=medicion_id).first()
+        if not med:
+            raise HTTPException(status_code=404, detail="Medición no encontrada")
+        target_cedulas = None
+        if body and body.cedulas:
+            target_cedulas = body.cedulas
+        elif cedulas:
+            target_cedulas = [c.strip() for c in cedulas.split(",") if c.strip()]
+        target_forma = (body.forma if body and body.forma else forma) or None
+        fichas = _nomina_fichas(session, medicion_id, cedulas=target_cedulas, forma=target_forma)
+        if not fichas:
+            raise HTTPException(status_code=404, detail="No hay trabajadores para imprimir.")
+        pdf_bytes = generate_roll_labels_pdf(fichas)
+        campana = med.codigo_campana or medicion_id[:8]
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="etiquetas_rollo_{campana}.pdf"'},
+        )
+    finally:
+        session.close()
+
+
+@app.get("/api/mediciones/{medicion_id}/nomina/sheet-pdf")
+@app.post("/api/mediciones/{medicion_id}/nomina/sheet-pdf")
+def api_print_nomina_sheet_pdf(
+    medicion_id: str,
+    current_user: CargaUser,
+    forma: Optional[str] = Query(None),
+    cedulas: Optional[str] = Query(None),
+    body: Optional[PrintNominaIn] = Body(None),
+):
+    """Genera PDF en pliego Carta con cuadrícula 3×10 (30 etiquetas por hoja para papel adhesivo).
+    Admite tanto peticiones GET como POST.
+    """
+    session = SyncSessionLocal()
+    try:
+        med = session.query(Medicion).filter_by(id=medicion_id).first()
+        if not med:
+            raise HTTPException(status_code=404, detail="Medición no encontrada")
+        target_cedulas = None
+        if body and body.cedulas:
+            target_cedulas = body.cedulas
+        elif cedulas:
+            target_cedulas = [c.strip() for c in cedulas.split(",") if c.strip()]
+        target_forma = (body.forma if body and body.forma else forma) or None
+        fichas = _nomina_fichas(session, medicion_id, cedulas=target_cedulas, forma=target_forma)
+        if not fichas:
+            raise HTTPException(status_code=404, detail="No hay trabajadores para imprimir.")
+        pdf_bytes = generate_sheet_labels_pdf(fichas, page_size="letter")
+        campana = med.codigo_campana or medicion_id[:8]
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="etiquetas_pliego_carta_{campana}.pdf"'},
+        )
     finally:
         session.close()
 
@@ -968,6 +1061,32 @@ def api_print_one_label(
         session.close()
 
 
+@app.get("/api/mediciones/{medicion_id}/nomina/{cedula}/etiqueta.pdf")
+def api_print_one_label_pdf(
+    medicion_id: str,
+    cedula: str,
+    current_user: CargaUser,
+):
+    """Genera PDF vectorial 30×20 mm de 1 sola etiqueta."""
+    session = SyncSessionLocal()
+    try:
+        row = (
+            session.query(TrabajadorNomina)
+            .filter_by(medicion_id=medicion_id, cedula=cedula)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Trabajador no encontrado en la nómina")
+        pdf_bytes = generate_single_label_pdf(row.to_dict()["ficha"])
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="etiqueta_{cedula}.pdf"'},
+        )
+    finally:
+        session.close()
+
+
 @app.delete("/api/mediciones/{medicion_id}/nomina/{cedula}")
 def api_delete_nomina_row(
     medicion_id: str,
@@ -988,6 +1107,26 @@ def api_delete_nomina_row(
         return {"ok": True, "cedula": cedula}
     finally:
         session.close()
+
+
+@app.delete("/api/mediciones/{medicion_id}/nomina")
+@app.post("/api/mediciones/{medicion_id}/nomina/delete")
+def api_delete_nomina_batch(
+    medicion_id: str,
+    current_user: CargaUser,
+    body: Optional[DeleteNominaIn] = Body(None),
+):
+    session = SyncSessionLocal()
+    try:
+        q = session.query(TrabajadorNomina).filter_by(medicion_id=medicion_id)
+        if body and body.cedulas:
+            q = q.filter(TrabajadorNomina.cedula.in_(body.cedulas))
+        deleted_count = q.delete(synchronize_session=False)
+        session.commit()
+        return {"ok": True, "deleted_count": deleted_count}
+    finally:
+        session.close()
+
 
 
 # -----------------------------------------------------------------------------

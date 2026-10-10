@@ -134,6 +134,27 @@ class BatchManager:
                 raw_res["psicologa"] = ""
                 if job.medicion_id:
                     raw_res["medicion_id"] = job.medicion_id
+                    ced = (raw_res.get("identidad") or {}).get("id_documento")
+                    if ced:
+                        try:
+                            from .db.session import SyncSessionLocal
+                            from .db.models import TrabajadorNomina
+                            s = SyncSessionLocal()
+                            try:
+                                trab = s.query(TrabajadorNomina).filter_by(medicion_id=job.medicion_id, cedula=str(ced)).first()
+                                if trab and trab.ficha_json:
+                                    ident = raw_res.setdefault("identidad", {})
+                                    ident["ficha"] = trab.ficha_json
+                                    if trab.nombre_completo and not ident.get("nombre"):
+                                        ident["nombre"] = trab.nombre_completo
+                                    if trab.cargo and not ident.get("cargo"):
+                                        ident["cargo"] = trab.cargo
+                                    if trab.area and not ident.get("dependencia"):
+                                        ident["dependencia"] = trab.area
+                            finally:
+                                s.close()
+                        except Exception:
+                            pass
                 saved = save_caso(job.casos_dir, raw_res)
                 return ("ok", pdf_path.name, saved)
             except Exception as e:

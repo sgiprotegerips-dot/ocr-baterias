@@ -21,17 +21,17 @@ import {
   saveDatos,
   subscribeBatchEvents,
   uploadBatch,
-} from "./js/api.js?v=2.3";
+} from "./js/api.js?v=4.0";
 import { renderAuthBar } from "./js/components/authBar.js?v=3.1";
 import { renderBatchProgress } from "./js/components/batchProgress.js?v=2.2";
 import { renderCaseDetail } from "./js/components/caseDetail.js?v=2.2";
 import { renderCaseList } from "./js/components/caseList.js?v=2.2";
 import { renderInformeView } from "./js/components/informeView.js?v=3.2";
 import { renderStats } from "./js/components/stats.js?v=2.2";
-import { getDefaultViewForRole, renderRoleNav } from "./js/components/roleNav.js?v=3.0";
-import { renderAdminView } from "./js/components/adminView.js?v=3.0";
-import { renderOperadorView } from "./js/components/operadorView.js?v=3.5";
-import { renderEtiquetasView } from "./js/components/etiquetasView.js?v=3.8";
+import { getDefaultViewForRole, renderRoleNav } from "./js/components/roleNav.js?v=4.1";
+import { renderAdminView } from "./js/components/adminView.js?v=4.1";
+import { renderOperadorView } from "./js/components/operadorView.js?v=4.1";
+import { renderEtiquetasView } from "./js/components/etiquetasView.js?v=4.2";
 import { readSavedContext, saveContext } from "./js/contextStore.js?v=3.5";
 import { renderClienteView } from "./js/components/clienteView.js?v=3.2";
 import { renderHomePsico } from "./js/components/homePsico.js?v=3.0";

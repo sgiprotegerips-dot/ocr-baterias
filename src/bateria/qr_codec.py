@@ -83,7 +83,26 @@ def normalize_ficha(data: Optional[Dict[str, Any]]) -> Dict[str, str]:
     return out
 
 
-def encode_payload(data: Dict[str, Any]) -> str:
+def encode_compact_payload(data: Dict[str, Any]) -> str:
+    """Genera payload compacto BRP1 de alta legibilidad para cámaras de celulares e impresoras térmicas.
+
+    Estructura:
+        BRP1|{forma}|{fecha_aplicacion}|{cedula}|{nombre}
+
+    Al tener menos de 45 caracteres, produce un código QR de versión 2 o 3 (29×29 módulos)
+    con módulos grandes de ~0.56 mm en etiquetas de 30×20 mm, legible instantáneamente por cualquier teléfono.
+    """
+    ficha = normalize_ficha(data)
+    nombre = label_display_name(ficha.get("nombre", ""))
+    forma = ficha.get("forma", "A") or "A"
+    fecha = ficha.get("fecha_aplicacion", "") or ""
+    cedula = ficha.get("cedula", "")
+    return f"{PREFIX}|{forma}|{fecha}|{cedula}|{nombre}"
+
+
+def encode_payload(data: Dict[str, Any], compact: bool = False) -> str:
+    if compact:
+        return encode_compact_payload(data)
     ficha = normalize_ficha(data)
     payload = PREFIX + "|" + "|".join(ficha[k] for k in FICHA_FIELDS)
     # Strip trailing empty pipes to compress the payload

@@ -7,11 +7,16 @@
 import {
   createNominaManual,
   deleteNominaRow,
+  deleteNominaBatch,
   fetchNomina,
   fetchNominaPrintHtml,
+  fetchNominaPrintPdfBlob,
+  fetchNominaSheetPdfBlob,
   fetchOneLabelHtml,
+  fetchOneLabelPdfBlob,
   importNominaExcel,
-} from "../api.js";
+} from "../api.js?v=4.2";
+
 import { svgIcon } from "../icons.js";
 import { showToast } from "./toast.js";
 import { hasCampaignContext, renderContextPicker } from "./contextPicker.js";
@@ -136,39 +141,43 @@ function emptyForm() {
   return data;
 }
 
-async function openPrintHtmlAsync(fetchPromise, labelCount = 0) {
-  const countStr = labelCount > 0 ? `${labelCount} etiqueta${labelCount > 1 ? "s" : ""}` : "etiquetas";
-  showToast(`Preparando ${countStr} para impresión...`, "info");
-  try {
-    const html = await fetchPromise;
-    
-    let iframe = document.getElementById('print-iframe');
-    if (!iframe) {
-      iframe = document.createElement('iframe');
-      iframe.id = 'print-iframe';
-      // Hide visually but keep in render tree so print works across all browsers
-      iframe.style.position = 'fixed';
-      iframe.style.right = '0';
-      iframe.style.bottom = '0';
-      iframe.style.width = '0';
-      iframe.style.height = '0';
-      iframe.style.border = '0';
-      document.body.appendChild(iframe);
-    }
-    
-    iframe.contentWindow.document.open();
-    iframe.contentWindow.document.write(html);
-    iframe.contentWindow.document.close();
+function downloadBlobFile(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
+}
 
-    // Disparo explícito y confiable para que nunca falle la llamada a print()
-    setTimeout(() => {
-      try {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
-      } catch (e) {
-        console.error("Error al invocar print() en iframe:", e);
-      }
-    }, 350);
+async function triggerDirectPrintPdf(fetchBlobPromise, labelCount = 0, filename = "etiquetas_rollo.pdf") {
+  const countStr = labelCount > 0 ? `${labelCount} etiqueta${labelCount > 1 ? "s" : ""}` : "etiquetas";
+  showToast(`Generando PDF (${countStr})...`, "info");
+  try {
+    const blob = await fetchBlobPromise;
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank");
+    if (!win) {
+      downloadBlobFile(blob, filename);
+      showToast("Ventana emergente bloqueada. Se descargó el archivo PDF directamente.", "info");
+    } else {
+      showToast("PDF listo. Imprima a escala 100% en la nueva pestaña.", "success");
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    showToast(err.message, "error");
+  }
+}
+
+async function triggerDownloadPdf(fetchBlobPromise, labelCount = 0, filename = "etiquetas.pdf") {
+  const countStr = labelCount > 0 ? `${labelCount} etiqueta${labelCount > 1 ? "s" : ""}` : "etiquetas";
+  showToast(`Generando ${countStr} para descarga...`, "info");
+  try {
+    const blob = await fetchBlobPromise;
+    downloadBlobFile(blob, filename);
+    showToast(`Descarga completada (${filename}).`, "success");
   } catch (err) {
     showToast(err.message, "error");
   }
@@ -227,13 +236,29 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
             ${svgIcon("check-square", 14)}
             <span>Sel. 50</span>
           </button>
-          <button type="button" class="btn-action ghost" id="etq-print-selected" disabled>
-            ${svgIcon("file-text", 14)}
+          <button type="button" class="btn-action ghost" id="etq-print-selected" disabled title="Imprimir las etiquetas seleccionadas en rollo 30×20 mm">
+            ${svgIcon("printer", 14)}
             <span id="etq-lbl-print-sel">Imprimir seleccionadas</span>
           </button>
-          <button type="button" class="btn-action primary-solid" id="etq-print-all" ${ctxReady ? "" : "disabled"}>
-            ${svgIcon("layers", 14)}
-            <span id="etq-lbl-print-all">Imprimir toda la nómina</span>
+          <button type="button" class="btn-action ghost" id="etq-download-sheet" ${ctxReady ? "" : "disabled"} title="Descargar pliego tamaño Carta (30 etiquetas por hoja para papel adhesivo)">
+            ${svgIcon("file-text", 14)}
+            <span>PDF Carta 3×10</span>
+          </button>
+          <button type="button" class="btn-action ghost" id="etq-download-roll" ${ctxReady ? "" : "disabled"} title="Descargar archivo PDF continuo 30×20 mm para impresora Zebra/TSC">
+            ${svgIcon("download", 14)}
+            <span>PDF Rollo</span>
+          </button>
+          <button type="button" class="btn-action primary-solid" id="etq-print-all" ${ctxReady ? "" : "disabled"} title="Imprimir etiquetas en rollo térmico continuo">
+            ${svgIcon("printer", 14)}
+            <span id="etq-lbl-print-all">Imprimir Rollo</span>
+          </button>
+          <button type="button" class="btn-action danger-ghost" id="etq-delete-selected" disabled title="Eliminar los trabajadores seleccionados de la nómina">
+            ${svgIcon("trash-2", 14)}
+            <span id="etq-lbl-delete-sel">Eliminar seleccionados</span>
+          </button>
+          <button type="button" class="btn-action danger-ghost" id="etq-clear-all" ${ctxReady ? "" : "disabled"} title="Eliminar todos los registros importados de esta campaña">
+            ${svgIcon("trash-2", 14)}
+            <span>Vaciar nómina</span>
           </button>
         </div>
       </section>
@@ -254,11 +279,12 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
               <thead>
                 <tr>
                   <th class="etq-sticky-check"><input type="checkbox" id="etq-check-all" /></th>
+                  <th style="width:36px; text-align:center;">Acción</th>
                   ${TABLE_COLUMNS.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}
                 </tr>
               </thead>
               <tbody id="etq-tbody">
-                <tr><td colspan="${TABLE_COLUMNS.length + 1}" class="text-center">Cargando nómina...</td></tr>
+                <tr><td colspan="${TABLE_COLUMNS.length + 2}" class="text-center">Cargando nómina...</td></tr>
               </tbody>
             </table>
           </div>
@@ -268,10 +294,16 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
           <div class="etq-preview-card">
             <h3>Vista previa 30 × 20 mm</h3>
             <iframe id="etq-preview" class="etq-preview-frame" title="Vista previa de etiqueta"></iframe>
-            <button type="button" class="btn-primary" id="etq-print-one" disabled>
-              ${svgIcon("qr-code", 14)}
-              <span>Imprimir esta etiqueta</span>
-            </button>
+            <div style="display:flex;gap:6px;margin-top:8px;">
+              <button type="button" class="btn-primary" id="etq-print-one" style="flex:1;" disabled title="Imprimir esta etiqueta individual">
+                ${svgIcon("printer", 14)}
+                <span>Imprimir</span>
+              </button>
+              <button type="button" class="btn-action ghost" id="etq-download-one-pdf" style="flex:1;" disabled title="Descargar PDF 30×20 mm de esta persona">
+                ${svgIcon("download", 14)}
+                <span>PDF 30×20</span>
+              </button>
+            </div>
           </div>
 
           <form id="etq-form" class="etq-form-card" autocomplete="off">
@@ -284,11 +316,16 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
                 <span>Guardar e imprimir esta persona</span>
               </button>
               <button type="button" class="btn-action ghost" id="etq-reset">Nueva ficha vacía</button>
+              <button type="button" class="btn-action danger-ghost" id="etq-delete-current" style="display:none;" title="Eliminar este trabajador de la nómina">
+                ${svgIcon("trash-2", 14)}
+                <span>Eliminar trabajador</span>
+              </button>
             </div>
           </form>
         </aside>
       </div>
     </div>
+
   `;
 
   const fieldsRoot = container.querySelector("#etq-form-fields");
@@ -332,6 +369,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
   const tbody = container.querySelector("#etq-tbody");
   const preview = container.querySelector("#etq-preview");
   const btnPrintOne = container.querySelector("#etq-print-one");
+  const btnDownloadOne = container.querySelector("#etq-download-one-pdf");
   let currentCedula = null;
   let nomina = [];
 
@@ -410,6 +448,8 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     }
   };
 
+  const btnDelCurrent = container.querySelector("#etq-delete-current");
+
   const updateSelectionState = () => {
     const ceds = selectedCedulas();
     const btnSel = container.querySelector("#etq-print-selected");
@@ -417,6 +457,16 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     if (btnSel && lblSel) {
       btnSel.disabled = ceds.length === 0;
       lblSel.textContent = ceds.length > 0 ? `Imprimir seleccionadas (${ceds.length})` : "Imprimir seleccionadas";
+    }
+    const btnDelSel = container.querySelector("#etq-delete-selected");
+    const lblDelSel = container.querySelector("#etq-lbl-delete-sel");
+    if (btnDelSel && lblDelSel) {
+      btnDelSel.disabled = ceds.length === 0;
+      lblDelSel.textContent = ceds.length > 0 ? `Eliminar seleccionados (${ceds.length})` : "Eliminar seleccionados";
+    }
+    const btnClearAll = container.querySelector("#etq-clear-all");
+    if (btnClearAll) {
+      btnClearAll.disabled = !ctxReady || nomina.length === 0;
     }
   };
 
@@ -427,6 +477,8 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       preview.srcdoc = html.replace(/window\.print\(\);?/g, "");
       currentCedula = cedula;
       btnPrintOne.disabled = false;
+      if (btnDownloadOne) btnDownloadOne.disabled = false;
+      if (btnDelCurrent) btnDelCurrent.style.display = "inline-flex";
     } catch (err) {
       showToast(err.message, "error");
     }
@@ -435,7 +487,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
   const renderRows = () => {
     updateToolbarCounts();
     const filtered = getFilteredNomina();
-    const colCount = TABLE_COLUMNS.length + 1;
+    const colCount = TABLE_COLUMNS.length + 2;
     if (!filtered.length) {
       const msg = nomina.length === 0
         ? "Nómina vacía. Importe el Excel o registre a mano la primera persona."
@@ -455,6 +507,11 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
         return `
           <tr data-cedula="${escapeHtml(t.cedula)}" class="${currentCedula === t.cedula ? "is-active" : ""}">
             <td class="etq-sticky-check"><input type="checkbox" class="etq-row-check" value="${escapeHtml(t.cedula)}" /></td>
+            <td style="text-align:center;">
+              <button type="button" class="btn-table-del btn-delete-row" data-cedula="${escapeHtml(t.cedula)}" title="Eliminar a ${escapeHtml(t.nombre || t.nombre_completo || t.cedula)} de la nómina">
+                ${svgIcon("trash-2", 13)}
+              </button>
+            </td>
             ${cells}
           </tr>`;
       })
@@ -464,7 +521,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
 
   const reload = async () => {
     if (!medicionId) {
-      tbody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS.length + 1}" class="text-center">Seleccione empresa y campaña. La nómina de etiquetas es exclusiva de esa medición.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS.length + 2}" class="text-center">Seleccione empresa y campaña. La nómina de etiquetas es exclusiva de esa medición.</td></tr>`;
       return;
     }
     const res = await fetchNomina(medicionId);
@@ -476,10 +533,38 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
   try {
     await reload();
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS.length + 1}" class="text-center">${escapeHtml(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${TABLE_COLUMNS.length + 2}" class="text-center">${escapeHtml(err.message)}</td></tr>`;
   }
 
   tbody.addEventListener("click", async (ev) => {
+    const btnDel = ev.target.closest(".btn-delete-row");
+    if (btnDel) {
+      ev.stopPropagation();
+      const ced = btnDel.dataset.cedula;
+      if (!ced || !medicionId) return;
+      const target = nomina.find((t) => t.cedula === ced);
+      const nombre = target ? (target.nombre_completo || target.nombre || target.ficha?.nombre || ced) : ced;
+      if (!window.confirm(`¿Desea eliminar de la nómina a:\n${nombre} (C.C. ${ced})?`)) return;
+
+      try {
+        showToast(`Eliminando a ${ced}...`, "info");
+        await deleteNominaRow(medicionId, ced);
+        showToast(`Trabajador ${ced} eliminado correctamente.`, "success");
+        if (currentCedula === ced) {
+          currentCedula = null;
+          fillForm(emptyForm());
+          btnPrintOne.disabled = true;
+          if (btnDownloadOne) btnDownloadOne.disabled = true;
+          preview.srcdoc = "";
+          if (btnDelCurrent) btnDelCurrent.style.display = "none";
+        }
+        await reload();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+      return;
+    }
+
     const tr = ev.target.closest("tr[data-cedula]");
     if (!tr) return;
     if (ev.target.classList.contains("etq-row-check")) {
@@ -490,6 +575,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     const row = nomina.find((t) => t.cedula === ced);
     if (row) fillForm({ ...row, ...(row.ficha || {}) });
     currentCedula = ced;
+    if (btnDelCurrent) btnDelCurrent.style.display = "inline-flex";
     renderRows();
     await showPreview(ced);
   });
@@ -499,6 +585,7 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       updateSelectionState();
     }
   });
+
 
   container.querySelectorAll(".etq-chip").forEach((chip) => {
     chip.onclick = () => {
@@ -555,6 +642,44 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     }
   };
 
+  const btnDownloadSheet = container.querySelector("#etq-download-sheet");
+  if (btnDownloadSheet) {
+    btnDownloadSheet.onclick = () => {
+      if (!medicionId) return;
+      const ceds = selectedCedulas();
+      const cnt = ceds.length > 0 ? ceds.length : (activeFormaFilter ? getFilteredNomina().length : nomina.length);
+      if (cnt === 0) {
+        showToast("No hay trabajadores para exportar.", "error");
+        return;
+      }
+      const campCode = currentMedicion?.codigo_campana || medicionId.slice(0, 8);
+      triggerDownloadPdf(
+        fetchNominaSheetPdfBlob(medicionId, ceds.length > 0 ? ceds : null, ceds.length > 0 ? null : (activeFormaFilter || null)),
+        cnt,
+        `etiquetas_pliego_carta_${campCode}.pdf`
+      );
+    };
+  }
+
+  const btnDownloadRoll = container.querySelector("#etq-download-roll");
+  if (btnDownloadRoll) {
+    btnDownloadRoll.onclick = () => {
+      if (!medicionId) return;
+      const ceds = selectedCedulas();
+      const cnt = ceds.length > 0 ? ceds.length : (activeFormaFilter ? getFilteredNomina().length : nomina.length);
+      if (cnt === 0) {
+        showToast("No hay trabajadores para exportar.", "error");
+        return;
+      }
+      const campCode = currentMedicion?.codigo_campana || medicionId.slice(0, 8);
+      triggerDownloadPdf(
+        fetchNominaPrintPdfBlob(medicionId, ceds.length > 0 ? ceds : null, ceds.length > 0 ? null : (activeFormaFilter || null)),
+        cnt,
+        `etiquetas_rollo_${campCode}.pdf`
+      );
+    };
+  }
+
   container.querySelector("#etq-print-all").onclick = () => {
     if (!medicionId) return;
     const cnt = activeFormaFilter === "A"
@@ -568,15 +693,12 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       return;
     }
 
-    const desc = activeFormaFilter ? `FORMA ${activeFormaFilter} (${cnt} etiquetas)` : `toda la nómina (${cnt} etiquetas)`;
-    if (cnt > 30) {
-      if (!confirm(`Se van a preparar ${desc} para la impresora térmica Zebra. ¿Desea continuar?`)) {
-        return;
-      }
-    }
-    openPrintHtmlAsync(fetchNominaPrintHtml(medicionId, null, activeFormaFilter || null), cnt).catch(err => {
-      showToast(err.message, "error");
-    });
+    const campCode = currentMedicion?.codigo_campana || medicionId.slice(0, 8);
+    triggerDirectPrintPdf(
+      fetchNominaPrintPdfBlob(medicionId, null, activeFormaFilter || null),
+      cnt,
+      `etiquetas_rollo_${campCode}.pdf`
+    );
   };
 
   container.querySelector("#etq-print-selected").onclick = () => {
@@ -585,25 +707,127 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
       showToast("Seleccione al menos una fila.", "error");
       return;
     }
-    openPrintHtmlAsync(fetchNominaPrintHtml(medicionId, ceds), ceds.length).catch(err => {
-      showToast(err.message, "error");
-    });
+    const campCode = currentMedicion?.codigo_campana || medicionId.slice(0, 8);
+    triggerDirectPrintPdf(
+      fetchNominaPrintPdfBlob(medicionId, ceds),
+      ceds.length,
+      `etiquetas_rollo_${campCode}.pdf`
+    );
   };
+
+  const btnDeleteSelected = container.querySelector("#etq-delete-selected");
+  if (btnDeleteSelected) {
+    btnDeleteSelected.onclick = async () => {
+      if (!medicionId) return;
+      const ceds = selectedCedulas();
+      if (!ceds.length) {
+        showToast("Seleccione al menos un registro para eliminar.", "error");
+        return;
+      }
+      const confirmMsg = `¿Está seguro de eliminar ${ceds.length} registro(s) seleccionado(s) de la nómina?\n\nEsta acción borrará definitivamente estos trabajadores de la campaña.`;
+      if (!window.confirm(confirmMsg)) return;
+
+      try {
+        showToast(`Eliminando ${ceds.length} registros...`, "info");
+        const res = await deleteNominaBatch(medicionId, ceds);
+        showToast(`Se eliminaron ${res.deleted_count ?? ceds.length} registros de la nómina.`, "success");
+        if (ceds.includes(currentCedula)) {
+          currentCedula = null;
+          fillForm(emptyForm());
+          btnPrintOne.disabled = true;
+          if (btnDownloadOne) btnDownloadOne.disabled = true;
+          preview.srcdoc = "";
+          if (btnDelCurrent) btnDelCurrent.style.display = "none";
+        }
+        await reload();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+  }
+
+  const btnClearAll = container.querySelector("#etq-clear-all");
+  if (btnClearAll) {
+    btnClearAll.onclick = async () => {
+      if (!medicionId) return;
+      if (!nomina.length) {
+        showToast("La nómina de esta campaña ya está vacía.", "info");
+        return;
+      }
+      const confirmMsg = `ATENCIÓN: ¿Está seguro de VACIAR TODOS los ${nomina.length} trabajadores de esta nómina?\n\nSe eliminarán permanentemente todos los registros importados o guardados para esta campaña.`;
+      if (!window.confirm(confirmMsg)) return;
+
+      try {
+        showToast("Vaciando nómina de la campaña...", "info");
+        const res = await deleteNominaBatch(medicionId, null);
+        showToast(`Nómina vaciada exitosamente (${res.deleted_count ?? nomina.length} eliminados).`, "success");
+        currentCedula = null;
+        fillForm(emptyForm());
+        btnPrintOne.disabled = true;
+        if (btnDownloadOne) btnDownloadOne.disabled = true;
+        preview.srcdoc = "";
+        if (btnDelCurrent) btnDelCurrent.style.display = "none";
+        await reload();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+  }
+
+  if (btnDelCurrent) {
+    btnDelCurrent.onclick = async () => {
+      if (!currentCedula || !medicionId) return;
+      const target = nomina.find((t) => t.cedula === currentCedula);
+      const nombre = target ? (target.nombre_completo || target.nombre || target.ficha?.nombre || currentCedula) : currentCedula;
+      if (!window.confirm(`¿Desea eliminar de la nómina a:\n${nombre} (C.C. ${currentCedula})?`)) return;
+
+      try {
+        showToast(`Eliminando a ${currentCedula}...`, "info");
+        await deleteNominaRow(medicionId, currentCedula);
+        showToast(`Trabajador ${currentCedula} eliminado correctamente.`, "success");
+        currentCedula = null;
+        fillForm(emptyForm());
+        btnPrintOne.disabled = true;
+        if (btnDownloadOne) btnDownloadOne.disabled = true;
+        preview.srcdoc = "";
+        btnDelCurrent.style.display = "none";
+        await reload();
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    };
+  }
+
+  if (btnDownloadOne) {
+    btnDownloadOne.onclick = () => {
+      if (!currentCedula || !medicionId) return;
+      triggerDownloadPdf(
+        fetchOneLabelPdfBlob(medicionId, currentCedula),
+        1,
+        `etiqueta_${currentCedula}.pdf`
+      );
+    };
+  }
 
   btnPrintOne.onclick = () => {
     if (!currentCedula || !medicionId) return;
-    openPrintHtmlAsync(fetchOneLabelHtml(medicionId, currentCedula)).catch(err => {
-      showToast(err.message, "error");
-    });
+    triggerDirectPrintPdf(
+      fetchOneLabelPdfBlob(medicionId, currentCedula),
+      1,
+      `etiqueta_${currentCedula}.pdf`
+    );
   };
 
   container.querySelector("#etq-reset").onclick = () => {
     currentCedula = null;
     fillForm(emptyForm());
     btnPrintOne.disabled = true;
+    if (btnDownloadOne) btnDownloadOne.disabled = true;
+    if (btnDelCurrent) btnDelCurrent.style.display = "none";
     preview.srcdoc = "";
     renderRows();
   };
+
 
   form.onsubmit = async (ev) => {
     ev.preventDefault();
@@ -620,29 +844,11 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     try {
       showToast("Guardando persona...", "info");
       const saved = await createNominaManual(medicionId, data);
-      showToast(`Guardado ${saved.nombre}. Imprimiendo etiqueta 30×20 mm.`, "info");
+      showToast(`Guardado ${saved.nombre}. Etiqueta lista.`, "success");
       await reload();
       currentCedula = saved.cedula;
       await showPreview(saved.cedula);
-      
-      const html = await fetchOneLabelHtml(medicionId, saved.cedula);
-      
-      let iframe = document.getElementById('print-iframe');
-      if (!iframe) {
-        iframe = document.createElement('iframe');
-        iframe.id = 'print-iframe';
-        iframe.style.position = 'fixed';
-        iframe.style.right = '0';
-        iframe.style.bottom = '0';
-        iframe.style.width = '0';
-        iframe.style.height = '0';
-        iframe.style.border = '0';
-        document.body.appendChild(iframe);
-      }
-      
-      iframe.contentWindow.document.open();
-      iframe.contentWindow.document.write(html);
-      iframe.contentWindow.document.close();
+      triggerDirectPrintPdf(fetchOneLabelPdfBlob(medicionId, saved.cedula), 1, `etiqueta_${saved.cedula}.pdf`);
     } catch (err) {
       showToast(err.message, "error");
     }

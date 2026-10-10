@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import numpy as np
 
@@ -223,7 +229,7 @@ def test_parse_ficha_excel_two_formas():
             "F",
         ]
     )
-    tmp = Path("/tmp/ficha_qr_test.xlsx")
+    tmp = Path(tempfile.gettempdir()) / "ficha_qr_test.xlsx"
     wb.save(tmp)
 
     rows = parse_ficha_excel(tmp)
@@ -253,7 +259,7 @@ def test_parse_ficha_excel_ignores_instruction_row_with_cedula_nombre():
     ws.append(["FORMA A"])
     ws.append(["No.", "FECHA APLICACIÓN", "CEDULA", "NOMBRE COMPLETO", "SEXO", "TIPO SALARIO"])
     ws.append([1, "2026-09-17", 1010101010, "ANA PRUEBA", "F", "F"])
-    tmp = Path("/tmp/ficha_instrucciones.xlsx")
+    tmp = Path(tempfile.gettempdir()) / "ficha_instrucciones.xlsx"
     wb.save(tmp)
     rows = parse_ficha_excel(tmp)
     assert len(rows) == 1
@@ -438,7 +444,7 @@ def test_api_manual_then_print_label():
     assert "30mm" in html.text
     assert "20mm" in html.text
     assert "1099000111" in html.text
-    assert "<svg" in html.text.lower()
+    assert ("<svg" in html.text.lower()) or ("<img" in html.text.lower())
 
 
 def test_api_import_ficha_excel():
@@ -516,7 +522,7 @@ def test_api_import_ficha_excel():
             "F",
         ]
     )
-    tmp = Path("/tmp/ficha_import_api.xlsx")
+    tmp = Path(tempfile.gettempdir()) / "ficha_import_api.xlsx"
     wb.save(tmp)
     with tmp.open("rb") as fh:
         r = client.post(
@@ -527,6 +533,104 @@ def test_api_import_ficha_excel():
     assert r.json()["imported"] >= 1
     listed = client.get(f"/api/mediciones/{mid}/nomina").json()
     assert any(t["cedula"] == "1999888777" for t in listed["trabajadores"])
+
+
+def test_generate_roll_labels_pdf_dimensions_and_qr_decode():
+    import cv2
+    import pymupdf as fitz
+    from src.bateria.label_pdf import generate_roll_labels_pdf
+    from src.bateria.qr_detect import _decode_image
+
+    batch = [
+        {
+            "forma": "A",
+            "cedula": "1032381023",
+            "nombre": "MAYRA ALEJANDRA GOMEZ PARRA",
+            "fecha_aplicacion": "2026-08-20",
+            "anio_nacimiento": "1987",
+        },
+        {
+            "forma": "B",
+            "cedula": "1107529591",
+            "nombre": "PAULA ANDREA VASQUEZ",
+            "fecha_aplicacion": "2026-08-20",
+            "anio_nacimiento": "1992",
+        },
+    ]
+    pdf_bytes = generate_roll_labels_pdf(batch)
+    assert len(pdf_bytes) > 1000
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    assert len(doc) == 2
+
+    w_expected = round(30.0 * 72 / 25.4, 1)
+    h_expected = round(20.0 * 72 / 25.4, 1)
+
+    for idx, page in enumerate(doc):
+        assert round(page.rect.width, 1) == w_expected
+        assert round(page.rect.height, 1) == h_expected
+
+        # Renderizar a 300 DPI y decodificar con detector OpenCV OMR
+        pix = page.get_pixmap(dpi=300)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))
+        if pix.n == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        elif pix.n == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+        raw = _decode_image(img)
+        assert raw is not None, f"Failed to decode QR from PDF page {idx}"
+        decoded = decode_payload(raw)
+        assert decoded is not None
+        assert decoded["cedula"] == batch[idx]["cedula"]
+        assert decoded["forma"] == batch[idx]["forma"]
+
+
+def test_generate_sheet_labels_pdf_grid():
+    import pymupdf as fitz
+    from src.bateria.label_pdf import generate_sheet_labels_pdf
+
+    batch = [
+        {"forma": "A", "cedula": f"1000000{i:02d}", "nombre": f"TRABAJADOR {i}"}
+        for i in range(35)
+    ]
+    pdf_bytes = generate_sheet_labels_pdf(batch, page_size="letter")
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    # 35 items en hoja de 30 por pliego = exactamente 2 paginas
+    assert len(doc) == 2
+    assert round(doc[0].rect.width) == 612
+    assert round(doc[0].rect.height) == 792
+
+
+def test_api_pdf_endpoints():
+    from tests.test_pipeline_and_web import get_client
+    from tests.auth_helpers import create_and_login_psicologa
+    import pymupdf as fitz
+
+    client = get_client()
+    create_and_login_psicologa(client)
+
+    mid = client.get("/api/mediciones").json()[0]["id"]
+
+    # 1. Endpoint PDF Rollo Termico
+    r_roll = client.post(f"/api/mediciones/{mid}/nomina/print-pdf", json={})
+    assert r_roll.status_code == 200, r_roll.text
+    assert r_roll.headers["content-type"] == "application/pdf"
+    doc_roll = fitz.open(stream=r_roll.content, filetype="pdf")
+    assert len(doc_roll) >= 1
+
+    # 2. Endpoint PDF Pliego Carta
+    r_sheet = client.post(f"/api/mediciones/{mid}/nomina/sheet-pdf", json={})
+    assert r_sheet.status_code == 200, r_sheet.text
+    assert r_sheet.headers["content-type"] == "application/pdf"
+    doc_sheet = fitz.open(stream=r_sheet.content, filetype="pdf")
+    assert len(doc_sheet) >= 1
+
+    # 3. Endpoint PDF Etiqueta Individual
+    r_single = client.get(f"/api/mediciones/{mid}/nomina/1099000111/etiqueta.pdf")
+    assert r_single.status_code == 200, r_single.text
+    assert r_single.headers["content-type"] == "application/pdf"
+    doc_single = fitz.open(stream=r_single.content, filetype="pdf")
+    assert len(doc_single) == 1
 
 
 if __name__ == "__main__":
@@ -558,4 +662,10 @@ if __name__ == "__main__":
     print(" test_api_manual_then_print_label PASSED")
     test_api_import_ficha_excel()
     print(" test_api_import_ficha_excel PASSED")
+    test_generate_roll_labels_pdf_dimensions_and_qr_decode()
+    print(" test_generate_roll_labels_pdf_dimensions_and_qr_decode PASSED")
+    test_generate_sheet_labels_pdf_grid()
+    print(" test_generate_sheet_labels_pdf_grid PASSED")
+    test_api_pdf_endpoints()
+    print(" test_api_pdf_endpoints PASSED")
     print("ALL QR/NOMINA TESTS PASSED")

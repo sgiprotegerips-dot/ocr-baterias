@@ -21,6 +21,7 @@ import {
 import { svgIcon } from "../icons.js";
 import { showToast } from "./toast.js";
 import { openWizardAltaCliente } from "./wizardAltaCliente.js";
+import { openWizardAbrirCampana } from "./wizardAbrirCampana.js";
 
 const ROLE_LABELS = {
   admin: "Administrador SST",
@@ -365,6 +366,10 @@ async function renderTabMediciones(container) {
             <h3>Campañas de Evaluación Psicosocial</h3>
             <p>Mediciones periódicas asociadas a las empresas clientes.</p>
           </div>
+          <button type="button" class="btn-primary" id="btn-admin-abrir-campana">
+            ${svgIcon("plus", 14)}
+            <span>Abrir nueva campaña</span>
+          </button>
         </div>
 
         <div class="admin-table-wrap">
@@ -425,6 +430,16 @@ async function renderTabMediciones(container) {
         </div>
       </div>
     `;
+
+    const btnAbrirCamp = container.querySelector("#btn-admin-abrir-campana");
+    if (btnAbrirCamp) {
+      btnAbrirCamp.onclick = () => {
+        openWizardAbrirCampana(async () => {
+          showToast("Campaña abierta exitosamente.", "success");
+          renderTabMediciones(container);
+        });
+      };
+    }
 
     // Handler para cambio de estado
     container.querySelectorAll(".btn-change-med-state").forEach((btn) => {

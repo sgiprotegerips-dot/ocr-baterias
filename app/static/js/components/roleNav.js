@@ -8,6 +8,7 @@ import { svgIcon } from "../icons.js";
 const NAV_CONFIG = {
   admin: [
     { id: "admin", label: "Consola de Administración", icon: "shield-check" },
+    { id: "campanas", label: "Campañas", icon: "target" },
     { id: "workspace", label: "Auditoría de Cuadernillos", icon: "list-checks" },
     { id: "etiquetas", label: "Etiquetas QR", icon: "qr-code" },
     { id: "informe", label: "Informe Diagnóstico SST", icon: "award" },

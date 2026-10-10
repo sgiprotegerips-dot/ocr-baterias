@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 import jwt
-from fastapi import Cookie, Depends, HTTPException, Request, status
+from fastapi import Cookie, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,7 @@ async def get_current_user_optional(
     request: Request,
     bearer: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     cookie_token: Optional[str] = Cookie(default=None, alias=COOKIE_NAME),
+    token_query: Optional[str] = Query(default=None, alias="token"),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[Usuario]:
     """Obtiene el usuario autenticado si existe, sin lanzar excepción 401."""
@@ -68,6 +69,8 @@ async def get_current_user_optional(
         token = cookie_token
     elif bearer and bearer.credentials:
         token = bearer.credentials
+    elif token_query:
+        token = token_query
 
     if not token:
         return None

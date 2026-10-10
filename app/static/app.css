@@ -283,6 +283,45 @@ body {
   border-color: var(--border-strong);
 }
 
+.btn-action.danger-ghost {
+  background: var(--alert-bg, rgba(239, 68, 68, 0.08));
+  border-color: var(--alert-border, rgba(239, 68, 68, 0.3));
+  color: var(--alert-text, #dc2626);
+}
+
+.btn-action.danger-ghost:hover:not(:disabled) {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+.btn-action.danger-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-table-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: var(--radius-xs);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-table-del:hover {
+  background: var(--alert-bg, rgba(239, 68, 68, 0.12));
+  color: #dc2626;
+  border-color: var(--alert-border, rgba(239, 68, 68, 0.3));
+}
+
+
 .btn-cmd-trigger {
   background: var(--bg-card-subtle);
   border-color: var(--border);
