@@ -635,7 +635,8 @@ export async function renderEtiquetasView(container, state, callbacks = {}) {
     }
     try {
       const res = await importNominaExcel(medicionId, file);
-      showToast(`Importados ${res.imported} trabajadores (${res.created} nuevos).`, "info");
+      const dupMsg = res.duplicates ? `, ${res.duplicates} cédula(s) repetida(s) consolidada(s)` : "";
+      showToast(`Importados ${res.imported} trabajadores (${res.created} nuevos${dupMsg}).`, "info");
       await reload();
     } catch (err) {
       showToast(err.message, "error");

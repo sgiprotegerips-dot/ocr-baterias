@@ -912,6 +912,15 @@ async def api_import_nomina_excel(
                 pass
         if not fichas:
             raise HTTPException(status_code=400, detail="El Excel no contiene filas de FICHA DATOS GENERALES.")
+        # Una misma cédula repetida en el Excel se consolida (gana la última fila).
+        # La sesión usa autoflush=False: sin esto, la 2.ª fila repetida intentaría
+        # un INSERT duplicado y violaría uq_nomina_medicion_cedula (error 500).
+        total_filas = len(fichas)
+        unique_fichas: Dict[str, Dict[str, Any]] = {}
+        for ficha in fichas:
+            unique_fichas[ficha["cedula"]] = ficha
+        fichas = list(unique_fichas.values())
+        duplicates = total_filas - len(fichas)
         created = 0
         updated = 0
         for ficha in fichas:
@@ -930,11 +939,11 @@ async def api_import_nomina_excel(
             accion="NOMINA_IMPORT_EXCEL",
             entidad_tipo="NOMINA",
             entidad_id=medicion_id,
-            datos_nuevos={"created": created, "updated": updated, "total": len(fichas)},
+            datos_nuevos={"created": created, "updated": updated, "total": len(fichas), "duplicates": duplicates},
         )
         session.add(log)
         session.commit()
-        return {"imported": len(fichas), "created": created, "updated": updated}
+        return {"imported": len(fichas), "created": created, "updated": updated, "duplicates": duplicates}
     finally:
         session.close()
 
