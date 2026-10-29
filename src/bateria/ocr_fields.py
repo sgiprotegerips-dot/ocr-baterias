@@ -36,18 +36,20 @@ def extract_cover_date(img: np.ndarray) -> str:
     """Extrae la fecha de aplicación desde las portadas de cuestionarios (pág 6, 18, 23)."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     h, w = gray.shape
-    roi = gray[: int(h * 0.55), :]
-    text = ocr_full_text(roi)
-    m = re.search(
-        r"(?:FECHA(?:\s+DE\s+APLICACI[OÓ]N)?)\s*[:\-.]?\s*([0-9]{1,2}\s*[\/\-.]\s*[0-9]{1,2}\s*[\/\-.]\s*[0-9]{2,4})",
-        text,
-        re.I,
-    )
-    if m:
-        return re.sub(r"\s+", "", m.group(1))
-    m2 = re.search(r"\b([0-3]?[0-9]\s*[\/\-]\s*[0-1]?[0-9]\s*[\/\-]\s*(?:20\d\d|\d{2}))\b", text)
-    if m2:
-        return re.sub(r"\s+", "", m2.group(1))
+    roi = gray[: int(h * 0.45), :]
+    for text in (ocr_printed_text(roi), ocr_full_text(roi)):
+        if not text:
+            continue
+        m = re.search(
+            r"(?:FECHA(?:\s+DE\s+APLICACI[OÓ]N)?)\s*[:\-.]?\s*([0-9]{1,2}\s*[\/\-.]\s*[0-9]{1,2}\s*[\/\-.]\s*[0-9]{2,4})",
+            text,
+            re.I,
+        )
+        if m:
+            return re.sub(r"\s+", "", m.group(1))
+        m2 = re.search(r"\b([0-3]?[0-9]\s*[\/\-]\s*[0-1]?[0-9]\s*[\/\-]\s*(?:20\d\d|\d{2}))\b", text)
+        if m2:
+            return re.sub(r"\s+", "", m2.group(1))
     return ""
 
 
@@ -97,7 +99,7 @@ def extract_id_and_name(img: np.ndarray) -> dict:
             if 1.8 <= aspect <= 8.5 and w * 0.10 <= bw_c <= w * 0.55 and 20 <= bh_c <= 120:
                 candidates.append((x, y, bw_c, bh_c))
 
-        for bx, by, bw_c, bh_c in sorted(candidates, key=lambda b: b[1]):
+        for bx, by, bw_c, bh_c in sorted(candidates, key=lambda b: b[2] * b[3], reverse=True)[:2]:
             pad_x = max(3, int(bw_c * 0.05))
             pad_y = max(3, int(bh_c * 0.08))
             crop = roi_gray[by + pad_y : by + bh_c - pad_y, bx + pad_x : bx + bw_c - pad_x]

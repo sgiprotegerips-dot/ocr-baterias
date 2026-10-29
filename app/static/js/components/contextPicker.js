@@ -3,8 +3,11 @@
  * Las etiquetas y la digitalización quedan aisladas por medición; no se mezclan.
  */
 
+import { fetchEmpresas } from "../api.js?v=4.5";
 import { svgIcon } from "../icons.js";
+import { setState } from "../state.js?v=2.2";
 import { openWizardAbrirCampana } from "./wizardAbrirCampana.js";
+import { openEditarClienteModal } from "./wizardAltaCliente.js?v=4.5";
 
 function esc(s) {
   return String(s || "")
@@ -29,7 +32,14 @@ export function renderContextPicker(container, state, callbacks = {}) {
     <section class="ctx-picker ${ready ? "is-ready" : "is-pending"}">
       <div class="ctx-picker-grid">
         <label class="ctx-field">
-          <span>${svgIcon("building-2", 13)} Empresa cliente</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span>${svgIcon("building-2", 13)} Empresa cliente</span>
+            ${
+              canOpen && empresa
+                ? `<button type="button" class="btn-action ghost" id="btn-ctx-editar-cliente" style="padding:2px 8px;font-size:11px;cursor:pointer;" title="Modificar todos los datos de ${esc(empresa.razon_social)}">${svgIcon("sliders", 11)} <span>Modificar Cliente</span></button>`
+                : ""
+            }
+          </div>
           <select id="ctx-empresa" ${empresas.length ? "" : "disabled"}>
             <option value="">Seleccione la empresa…</option>
             ${empresas
@@ -82,6 +92,16 @@ export function renderContextPicker(container, state, callbacks = {}) {
     selMed.onchange = () => {
       const id = selMed.value || null;
       if (callbacks.onSelectMedicion) callbacks.onSelectMedicion(id);
+    };
+  }
+
+  const btnEditCliente = container.querySelector("#btn-ctx-editar-cliente");
+  if (btnEditCliente && empresa) {
+    btnEditCliente.onclick = () => {
+      openEditarClienteModal(empresa, async () => {
+        const updatedList = await fetchEmpresas();
+        setState({ empresas: updatedList });
+      });
     };
   }
 

@@ -17,11 +17,12 @@ import {
   fetchOcrEngines,
   updateAdminUser,
   updateMedicionEstado,
-} from "../api.js";
+} from "../api.js?v=4.5";
 import { svgIcon } from "../icons.js";
 import { showToast } from "./toast.js";
-import { openWizardAltaCliente } from "./wizardAltaCliente.js";
+import { openWizardAltaCliente, openEditarClienteModal } from "./wizardAltaCliente.js?v=4.5";
 import { openWizardAbrirCampana } from "./wizardAbrirCampana.js";
+import { setState } from "../state.js?v=2.2";
 
 const ROLE_LABELS = {
   admin: "Administrador SST",
@@ -170,6 +171,15 @@ function buildAdminDOM(container, stats, onNavigate) {
 }
 
 async function renderTabTelemetria(container, stats) {
+  const ocr = stats.motores_ocr || {};
+  const rapidOk = Boolean(ocr.rapid_ocr_available ?? ocr.rapid_ocr_onnx);
+  const tessOk = Boolean(ocr.tesseract_available ?? ocr.tesseract);
+  const appleOk = Boolean(ocr.apple_vision_available ?? ocr.apple_vision);
+  const aiOk = Boolean(ocr.ai_fallback_available);
+  const aiModel = ocr.ai_fallback_model || "gemini-2.5-flash";
+  const aiStats = ocr.ai_fallback_stats || {};
+  const isMac = (ocr.os || "").toLowerCase() === "darwin";
+
   container.innerHTML = `
     <div class="admin-subpane">
       <div class="pane-header-row">
@@ -188,22 +198,38 @@ async function renderTabTelemetria(container, stats) {
           <h4>Motor OCR Activo</h4>
           <div class="telemetry-item-row">
             <span class="telemetry-label">Motor Primario:</span>
-            <strong class="text-accent">${stats.motores_ocr?.active_engine || "Detectando..."}</strong>
+            <strong class="text-accent">${ocr.active_engine === "rapid_ocr_onnx" ? "RapidOCR PP-OCRv4 (ONNX Runtime)" : (ocr.active_engine || "Detectando...")}</strong>
           </div>
           <div class="telemetry-item-row">
             <span class="telemetry-label">Sistema Operativo:</span>
-            <span>${stats.motores_ocr?.os || "Desconocido"} (${stats.motores_ocr?.arch || ""})</span>
-          </div>
-          <div class="telemetry-item-row">
-            <span class="telemetry-label">Apple Vision Disponible:</span>
-            <span class="status-pill status-pill-${stats.motores_ocr?.apple_vision_available ? "listo" : "faltan_datos"}">
-              ${stats.motores_ocr?.apple_vision_available ? "Disponible (Nativo macOS)" : "No disponible"}
-            </span>
+            <span>${ocr.os || "Desconocido"} (${ocr.arch || ""})</span>
           </div>
           <div class="telemetry-item-row">
             <span class="telemetry-label">RapidOCR ONNX Disponible:</span>
-            <span class="status-pill status-pill-${stats.motores_ocr?.rapid_ocr_available ? "listo" : "faltan_datos"}">
-              ${stats.motores_ocr?.rapid_ocr_available ? "Disponible (CPU/Linux)" : "No disponible"}
+            <span class="status-pill status-pill-${rapidOk ? "listo" : "faltan_datos"}">
+              <span class="status-dot ${rapidOk ? "ok" : "warn"}"></span>
+              ${rapidOk ? "Habilitado y Activo (PP-OCRv4 CPU/Linux)" : "No disponible"}
+            </span>
+          </div>
+          <div class="telemetry-item-row">
+            <span class="telemetry-label">Tesseract 5 (Español):</span>
+            <span class="status-pill status-pill-${tessOk ? "listo" : "faltan_datos"}">
+              <span class="status-dot ${tessOk ? "ok" : "warn"}"></span>
+              ${tessOk ? "Habilitado y Activo (Impreso / Dígitos)" : "No disponible"}
+            </span>
+          </div>
+          <div class="telemetry-item-row">
+            <span class="telemetry-label">Apple Vision (macOS):</span>
+            <span class="status-pill status-pill-${appleOk ? "listo" : "listo"}">
+              <span class="status-dot ok"></span>
+              ${appleOk ? "Habilitado (Nativo macOS)" : (!isMac ? "No aplica en Linux (Usa RapidOCR ONNX)" : "No disponible")}
+            </span>
+          </div>
+          <div class="telemetry-item-row">
+            <span class="telemetry-label">IA ante Inconsistencias:</span>
+            <span class="status-pill status-pill-${aiOk ? "listo" : "faltan_datos"}">
+              <span class="status-dot ${aiOk ? "ok" : "warn"}"></span>
+              ${aiOk ? `Activa solo en inconsistencias (${aiModel} · ${aiStats.calls_total || 0} consultas)` : "No configurada"}
             </span>
           </div>
         </div>
@@ -211,8 +237,8 @@ async function renderTabTelemetria(container, stats) {
         <div class="telemetry-card">
           <h4>Capacidad de Cómputo Paralelo</h4>
           <div class="telemetry-item-row">
-            <span class="telemetry-label">Núcleos de CPU:</span>
-            <strong>${navigator.hardwareConcurrency || "Multi-core"} Cores</strong>
+            <span class="telemetry-label">Núcleos / Workers Activos:</span>
+            <strong>${ocr.cpu_cores || navigator.hardwareConcurrency || 4} Cores · ${ocr.workers || 8} Workers Paralelos</strong>
           </div>
           <div class="telemetry-item-row">
             <span class="telemetry-label">Inmunidad a Trasluz:</span>
@@ -301,9 +327,11 @@ async function renderTabEmpresas(container) {
                 <th>Ciudad</th>
                 <th>Sector Económico</th>
                 <th>Contacto SST</th>
+                <th>Portal Cliente</th>
                 <th>Psicóloga</th>
                 <th>Campañas</th>
                 <th>Estado</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -320,20 +348,31 @@ async function renderTabEmpresas(container) {
                       <td>
                         <div class="cell-sub">${escapeHtml(e.contacto_nombre || "No asignado")}</div>
                         <small>${escapeHtml(e.contacto_email || "")}</small>
+                        ${e.contacto_telefono ? `<div><small>${escapeHtml(e.contacto_telefono)}</small></div>` : ""}
+                      </td>
+                      <td>
+                        <div class="cell-sub">${escapeHtml(e.portal_nombre || "—")}</div>
+                        <small><code>${escapeHtml(e.portal_email || "Sin usuario portal")}</code></small>
                       </td>
                       <td>${escapeHtml(e.psicologa_responsable_nombre || "—")}</td>
                       <td><span class="badge-number">${e.mediciones_count || 0}</span></td>
                       <td>
-                        <span class="status-pill status-pill-listo">
-                          <span class="status-dot ok"></span>
-                          Activa
+                        <span class="status-pill status-pill-${e.activo !== false ? "listo" : "faltan_datos"}">
+                          <span class="status-dot ${e.activo !== false ? "ok" : "alert"}"></span>
+                          ${e.activo !== false ? "Activa" : "Inactiva"}
                         </span>
+                      </td>
+                      <td>
+                        <button type="button" class="btn-action-sm ghost btn-edit-empresa" data-id="${escapeHtml(e.id)}" title="Modificar todos los datos del cliente ${escapeHtml(e.razon_social)}">
+                          ${svgIcon("sliders", 12)}
+                          <span>Modificar</span>
+                        </button>
                       </td>
                     </tr>
                   `
                       )
                       .join("")
-                  : `<tr><td colspan="8" class="text-center">No hay empresas registradas.</td></tr>`
+                  : `<tr><td colspan="10" class="text-center">No hay empresas registradas.</td></tr>`
               }
             </tbody>
           </table>
@@ -345,9 +384,23 @@ async function renderTabEmpresas(container) {
       altaBtn.onclick = () =>
         openWizardAltaCliente(async () => {
           showToast("Cliente registrado. La psicóloga ya puede abrir la campaña.", "success");
+          const updatedList = await fetchEmpresas();
+          setState({ empresas: updatedList });
           renderTabEmpresas(container);
         });
     }
+
+    container.querySelectorAll(".btn-edit-empresa").forEach((btn) => {
+      btn.onclick = () => {
+        const emp = empresas.find((x) => x.id === btn.dataset.id);
+        if (!emp) return;
+        openEditarClienteModal(emp, async () => {
+          const updatedList = await fetchEmpresas();
+          setState({ empresas: updatedList });
+          renderTabEmpresas(container);
+        });
+      };
+    });
   } catch (err) {
     container.innerHTML = `<p class="text-danger">Error cargando empresas: ${escapeHtml(err.message)}</p>`;
   }

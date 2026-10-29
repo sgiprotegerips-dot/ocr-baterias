@@ -4,9 +4,10 @@
  * Cero emojis. Iconos vectoriales SVG puros.
  */
 
-import { createEmpresa, createMedicion, fetchPsicologas } from "../api.js?v=2.2";
+import { createEmpresa, createMedicion, fetchEmpresas, fetchPsicologas } from "../api.js?v=4.5";
 import { svgIcon } from "../icons.js?v=2.2";
 import { setState, state } from "../state.js?v=2.2";
+import { openEditarClienteModal } from "./wizardAltaCliente.js?v=4.5";
 
 
 export function renderTenantBar(container, currentState, callbacks = {}) {
@@ -45,6 +46,10 @@ export function renderTenantBar(container, currentState, callbacks = {}) {
             ${
               canManage
                 ? `
+            <button type="button" class="btn-tenant-action" id="btn-editar-empresa" title="Modificar todos los datos del cliente seleccionado" ${!currentEmpresa ? "disabled" : ""}>
+              ${svgIcon("sliders", 13)}
+              <span>Modificar Cliente</span>
+            </button>
             <button type="button" class="btn-tenant-action" id="btn-nueva-empresa" title="Registrar nueva Empresa Base (Psicóloga SST)">
               ${svgIcon("plus", 13)}
               <span>Nueva Empresa</span>
@@ -113,6 +118,18 @@ export function renderTenantBar(container, currentState, callbacks = {}) {
     selMedicion.onchange = (e) => {
       const medId = e.target.value;
       if (callbacks.onSelectMedicion) callbacks.onSelectMedicion(medId);
+    };
+  }
+
+  // Botón Modificar Cliente
+  const btnEditarEmpresa = container.querySelector("#btn-editar-empresa");
+  if (btnEditarEmpresa) {
+    btnEditarEmpresa.onclick = () => {
+      if (!currentEmpresa) return;
+      openEditarClienteModal(currentEmpresa, async () => {
+        const updatedList = await fetchEmpresas();
+        setState({ empresas: updatedList });
+      });
     };
   }
 

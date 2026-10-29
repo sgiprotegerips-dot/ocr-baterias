@@ -72,8 +72,9 @@ def prune_close_peaks(
 
 
 def fit_regular_columns(t_vlines: np.ndarray, n_choices: int = 5) -> list[int]:
-    """Encuentra los límites de las columnas Likert combinando detección directa de picos y grilla regular."""
+    """Encuentra los límites de las columnas Likert combinando detección directa de picos y grilla regular (200 y 300 DPI)."""
     th, tw = t_vlines.shape[:2]
+    t_scale = max(0.70, min(2.40, tw / 1480.0))
     v_proj = np.sum(t_vlines, axis=0) / 255.0
 
     min_x = int(tw * 0.38)
@@ -81,36 +82,51 @@ def fit_regular_columns(t_vlines: np.ndarray, n_choices: int = 5) -> list[int]:
     thresh = max(th * 0.18, float(np.percentile(v_proj[min_x:], 75)))
     thresh = min(thresh, th * 0.35)
 
+    min_peak_dist = int(round(35 * t_scale))
     v_pad = np.pad(v_proj, (1, 1), mode="constant")
     for x in range(min_x, tw):
         val = v_pad[x + 1]
         if val >= thresh and val >= v_pad[x] and val >= v_pad[x + 2]:
-            if not cand_peaks or x - cand_peaks[-1] > 35:
+            if not cand_peaks or x - cand_peaks[-1] > min_peak_dist:
                 cand_peaks.append(x)
             elif val > v_proj[cand_peaks[-1]]:
                 cand_peaks[-1] = x
 
-    if cand_peaks and tw - cand_peaks[-1] > 75:
-        r_peaks = [x for x in range(tw - 40, tw) if v_proj[x] > th * 0.12]
+    if cand_peaks and tw - cand_peaks[-1] > int(round(75 * t_scale)):
+        r_margin = int(round(40 * t_scale))
+        r_peaks = [x for x in range(max(0, tw - r_margin), tw) if v_proj[x] > th * 0.12]
         if r_peaks:
             cand_peaks.append(max(r_peaks, key=lambda x: v_proj[x]))
         else:
-            cand_peaks.append(tw - 6)
+            cand_peaks.append(tw - int(round(6 * t_scale)))
 
-    # Caso 1: Exactamente n_choices + 1 picos con anchos razonables y regulares
+    min_col_w = int(round(65 * t_scale))
+    max_col_w = int(round(195 * t_scale))
+    max_col_spread = int(round(56 * t_scale))
+
+    # Caso 1: Exactamente n_choices + 1 picos con anchos razonables (soporta tablas con columnas de ancho mixto a 200 y 300 DPI)
     if len(cand_peaks) == n_choices + 1:
         diffs = [cand_peaks[i + 1] - cand_peaks[i] for i in range(len(cand_peaks) - 1)]
-        if all(65 <= d <= 190 for d in diffs) and (max(diffs) - min(diffs) <= 18):
+        if all(min_col_w <= d <= max_col_w for d in diffs) and (max(diffs) - min(diffs) <= max_col_spread):
             return cand_peaks
 
-    # Caso 2: Más de n_choices + 1 picos, seleccionar la subsecuencia regular
+    # Caso 2: Más de n_choices + 1 picos, seleccionar la subsecuencia de líneas verticales más fuertes
     if len(cand_peaks) > n_choices + 1:
+        best_sub = None
+        best_sub_score = -1.0
         for start_i in range(len(cand_peaks) - n_choices, -1, -1):
             sub = cand_peaks[start_i : start_i + n_choices + 1]
             if len(sub) == n_choices + 1:
                 diffs = [sub[i + 1] - sub[i] for i in range(n_choices)]
-                if all(65 <= d <= 190 for d in diffs) and (max(diffs) - min(diffs) <= 18):
-                    return sub
+                if all(min_col_w <= d <= max_col_w for d in diffs) and (max(diffs) - min(diffs) <= max_col_spread):
+                    edge_bonus = 200.0 if (tw - sub[-1]) <= int(round(45 * t_scale)) else 0.0
+                    uniform_bonus = max(0.0, float(max_col_spread) - (max(diffs) - min(diffs))) * 3.0
+                    sc = sum(float(v_proj[x]) for x in sub) + edge_bonus + uniform_bonus
+                    if sc > best_sub_score:
+                        best_sub_score = sc
+                        best_sub = sub
+        if best_sub is not None:
+            return best_sub
 
     # Caso 3: Búsqueda de grilla regular uniforme
     best_score = -1.0
@@ -330,12 +346,14 @@ def read_likert_tables(
         thresh = max(likert_w * 0.20, float(np.percentile(h_proj, 75)))
         thresh = min(thresh, likert_w * 0.35)
 
+        p_scale = max(0.70, min(2.40, max(h_page, w_page) / 2190.0))
+        min_py_step = int(round(16 * p_scale))
         h_pad = np.pad(h_proj, (1, 1), mode="constant")
         peaks: list[int] = []
         for py in range(th):
             val = h_pad[py + 1]
             if val >= thresh and val >= h_pad[py] and val >= h_pad[py + 2]:
-                if not peaks or py - peaks[-1] > 16:
+                if not peaks or py - peaks[-1] > min_py_step:
                     peaks.append(py)
                 elif val > h_proj[peaks[-1]]:
                     peaks[-1] = py
@@ -343,7 +361,7 @@ def read_likert_tables(
         n_expected_t = table_items_plan[t_idx] if t_idx < len(table_items_plan) else None
         target_rows = (n_expected_t + 1) if n_expected_t else 2
         exp_h = th / float(target_rows)
-        min_g = 24 if exp_h < 55 else 38
+        min_g = int(round(24 * p_scale)) if exp_h < (55 * p_scale) else int(round(38 * p_scale))
         peaks = prune_close_peaks(peaks, h_proj, min_gap=min_g, unit_h=exp_h)
 
         # Si hay brechas grandes mayores a 1.55 * unit_h, subdividirlas
@@ -365,17 +383,17 @@ def read_likert_tables(
         if len(peaks) < 2:
             continue
 
-        # Eliminación determinista de encabezados:
-        # Si se detectaron K filas y se esperan N (K >= N), tomar la ventana de N filas
-        # que comience en la base del encabezado (35 <= y <= 160)
+        # Eliminación determinista de encabezados (escalado para 200 y 300 DPI):
+        hdr_min = int(round(35 * p_scale))
+        hdr_max = int(round(160 * p_scale))
         if n_expected_t and (len(peaks) - 1) >= n_expected_t:
-            cand_starts = [k for k in range(len(peaks) - n_expected_t) if 35 <= peaks[k] <= 160]
+            cand_starts = [k for k in range(len(peaks) - n_expected_t) if hdr_min <= peaks[k] <= hdr_max]
             if cand_starts:
                 best_k = max(cand_starts)
                 peaks = peaks[best_k : best_k + n_expected_t + 1]
             else:
                 peaks = peaks[-n_expected_t - 1 :]
-        elif len(peaks) >= 2 and peaks[0] <= 15 and 35 <= peaks[1] <= 100:
+        elif len(peaks) >= 2 and peaks[0] <= int(round(15 * p_scale)) and hdr_min <= peaks[1] <= int(round(100 * p_scale)):
             peaks = peaks[1:]
 
         n_rows = len(peaks) - 1
@@ -434,6 +452,7 @@ def read_likert_tables(
                     "confidence": round(conf, 4),
                     "n_choices": n_choices,
                     "row_bbox": [int(x + cols[0]), int(y + y0), int(cols[-1] - cols[0]), int(row_h)],
+                    "col_offsets": [int(cols[c] - cols[0]) for c in range(n_choices + 1)],
                 }
             )
 

@@ -3,6 +3,11 @@ services:
     image: postgres:16-alpine
     container_name: bateria_postgres
     restart: unless-stopped
+    shm_size: "1gb"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     environment:
       POSTGRES_DB: ${DB_NAME:-bateria_sst}
       POSTGRES_USER: ${DB_USER:-bateria_admin}
@@ -24,6 +29,11 @@ services:
     image: bateria-psicosocial-omr:latest
     container_name: bateria_psicosocial
     restart: unless-stopped
+    shm_size: "2gb"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     depends_on:
       db:
         condition: service_healthy
@@ -37,26 +47,34 @@ services:
       - JWT_SECRET=${JWT_SECRET:-SST_SecretKey_Resolucion2764_2026_Colombia}
       - JWT_ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=480
-      # Concurrencia de hilos de procesamiento paralelo
-      - WORKERS=4
-      - BATCH_MAX_WORKERS=4
-      # Motor OCR 100% Self-Hosted
+      # Concurrencia deslimitada de hilos de procesamiento paralelo
+      - WORKERS=8
+      - BATCH_MAX_WORKERS=8
+      # Motor OCR 100% Self-Hosted a máxima capacidad de CPU (OMP_THREAD_LIMIT=1 evita spinlocks en Tesseract)
       - OCR_ENGINE=rapidocr
       - USE_AWS_TEXTRACT=0
-      - OMP_NUM_THREADS=2
+      - OMP_THREAD_LIMIT=1
+      - OMP_NUM_THREADS=1
       - ONNXRUNTIME_NUM_THREADS=2
+      - OPENBLAS_NUM_THREADS=2
+      - MKL_NUM_THREADS=2
       - LOG_LEVEL=INFO
+      # IA Multimodal de Respaldo (invocada exclusivamente ante inconsistencias)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - AI_FALLBACK_ON_INCONSISTENCY=${AI_FALLBACK_ON_INCONSISTENCY:-1}
     volumes:
       - ./data:/app/data
       - ./out:/app/out
       - ./src:/app/src
       - ./app:/app/app
       - ./tests:/app/tests
+      - ./run.py:/app/run.py
     logging:
       driver: "json-file"
       options:
-        max-size: "50m"
-        max-file: "3"
+        max-size: "200m"
+        max-file: "5"
 
   tunnel:
     image: cloudflare/cloudflared:latest

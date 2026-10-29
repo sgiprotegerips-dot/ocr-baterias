@@ -584,6 +584,13 @@ def test_generate_roll_labels_pdf_dimensions_and_qr_decode():
         assert decoded["cedula"] == batch[idx]["cedula"]
         assert decoded["forma"] == batch[idx]["forma"]
 
+        # Verificar que el texto impreso incluya siempre Forma, Cédula y Nombre completo ajustado
+        page_text = page.get_text()
+        assert batch[idx]["cedula"] in page_text, f"Cédula ausente en etiqueta: {page_text}"
+        assert f"FORMA {batch[idx]['forma']}" in page_text, f"Forma ausente en etiqueta: {page_text}"
+        for word in batch[idx]["nombre"].split():
+            assert word in page_text, f"Palabra '{word}' ausente en etiqueta: {page_text}"
+
 
 def test_generate_sheet_labels_pdf_grid():
     import pymupdf as fitz

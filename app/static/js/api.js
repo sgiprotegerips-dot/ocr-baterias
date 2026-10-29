@@ -22,23 +22,135 @@ export async function fetchCaso(casoId) {
   return await res.json();
 }
 
-export async function uploadBatch(fileList, medicionId = null) {
-  const fd = new FormData();
-  for (const f of fileList) {
-    fd.append("files", f);
-  }
-  if (medicionId) {
-    fd.append("medicion_id", medicionId);
-  }
-  const res = await fetch("/api/upload", {
-    method: "POST",
-    body: fd,
+function uploadChunkWithProgress(formData, onChunkProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/upload", true);
+    if (xhr.upload && typeof onChunkProgress === "function") {
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          onChunkProgress(ev.loaded, ev.total);
+        }
+      };
+    }
+    xhr.onload = () => {
+      let body = null;
+      try {
+        body = JSON.parse(xhr.responseText || "{}");
+      } catch (_e) {
+        body = { detail: "Respuesta inválida del servidor" };
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body);
+      } else {
+        reject(new Error(body.detail || body.error || `Error HTTP ${xhr.status} en la subida`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Error de red durante la transferencia de archivos"));
+    xhr.ontimeout = () => reject(new Error("Tiempo de espera agotado durante la subida"));
+    xhr.send(formData);
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: "Error en la subida" }));
-    throw new Error(err.detail || "Error en la subida de archivos");
+}
+
+export async function uploadBatch(fileList, medicionId = null, onUploadProgress = null) {
+  const files = Array.from(fileList || []);
+  if (!files.length) {
+    throw new Error("No se seleccionaron archivos para subir");
   }
-  return await res.json();
+
+  // Particionar en bloques seguros (máx 4 archivos o 20 MB por petición) para evitar límites de túnel/proxy
+  const MAX_FILES_PER_CHUNK = 4;
+  const MAX_BYTES_PER_CHUNK = 20 * 1024 * 1024;
+  const chunks = [];
+  let currentChunk = [];
+  let currentBytes = 0;
+
+  for (const file of files) {
+    const fSize = file.size || 0;
+    if (
+      currentChunk.length > 0 &&
+      (currentChunk.length >= MAX_FILES_PER_CHUNK || currentBytes + fSize > MAX_BYTES_PER_CHUNK)
+    ) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentBytes = 0;
+    }
+    currentChunk.push(file);
+    currentBytes += fSize;
+  }
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  const totalBytesAll = files.reduce((acc, f) => acc + (f.size || 0), 0);
+  let bytesCompletedBeforeChunk = 0;
+  let filesCompletedBeforeChunk = 0;
+  let jobId = null;
+  let lastRes = null;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkFiles = chunks[i];
+    const isLastChunk = i === chunks.length - 1;
+    const chunkBytes = chunkFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+
+    let attempt = 0;
+    let chunkRes = null;
+    while (attempt < 3) {
+      try {
+        const fd = new FormData();
+        for (const f of chunkFiles) {
+          fd.append("files", f);
+        }
+        if (medicionId) {
+          fd.append("medicion_id", medicionId);
+        }
+        if (jobId) {
+          fd.append("job_id", jobId);
+        }
+        fd.append("auto_start", isLastChunk ? "true" : "false");
+
+        chunkRes = await uploadChunkWithProgress(fd, (loadedInChunk) => {
+          if (typeof onUploadProgress === "function") {
+            const loadedTotal = Math.min(totalBytesAll, bytesCompletedBeforeChunk + loadedInChunk);
+            const pct = totalBytesAll > 0 ? Math.min(99, Math.round((loadedTotal / totalBytesAll) * 100)) : 50;
+            onUploadProgress({
+              percent: pct,
+              filesUploaded: filesCompletedBeforeChunk + chunkFiles.length,
+              totalFiles: files.length,
+              chunkIndex: i + 1,
+              totalChunks: chunks.length,
+              currentFileName: chunkFiles[0]?.name || "",
+            });
+          }
+        });
+        break;
+      } catch (err) {
+        attempt++;
+        if (attempt >= 3) throw err;
+        await new Promise((r) => setTimeout(r, 800 * attempt));
+      }
+    }
+
+    if (chunkRes && chunkRes.job_id) {
+      jobId = chunkRes.job_id;
+    }
+    lastRes = chunkRes;
+    bytesCompletedBeforeChunk += chunkBytes;
+    filesCompletedBeforeChunk += chunkFiles.length;
+  }
+
+  if (typeof onUploadProgress === "function") {
+    onUploadProgress({
+      percent: 100,
+      filesUploaded: files.length,
+      totalFiles: files.length,
+      chunkIndex: chunks.length,
+      totalChunks: chunks.length,
+      currentFileName: files[files.length - 1]?.name || "",
+    });
+  }
+
+  return lastRes;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +207,19 @@ export async function createEmpresa(data) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "Error registrando empresa" }));
     throw new Error(err.detail || "Error registrando empresa");
+  }
+  return await res.json();
+}
+
+export async function updateEmpresa(empresaId, data) {
+  const res = await fetch(`/api/empresas/${encodeURIComponent(empresaId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Error actualizando empresa cliente" }));
+    throw new Error(err.detail || "Error actualizando empresa cliente");
   }
   return await res.json();
 }

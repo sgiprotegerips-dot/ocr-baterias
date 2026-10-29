@@ -10,7 +10,7 @@ import {
   fetchCasos,
   subscribeBatchEvents,
   uploadBatch,
-} from "../api.js";
+} from "../api.js?v=4.8";
 import { svgIcon } from "../icons.js";
 import { showToast } from "./toast.js";
 import { hasCampaignContext, renderContextPicker } from "./contextPicker.js";
@@ -49,15 +49,16 @@ export async function renderOperadorView(container, state, callbacks = {}) {
               ${svgIcon("upload", 32)}
             </div>
             <div class="op-drop-text">
-              <h3>Arrastre lotes de hasta 1000 cuadernillos en PDF o archivo .ZIP</h3>
+              <h3>Arrastre lotes de cuadernillos en PDF o archivo .ZIP sin límite de cantidad</h3>
               <p>
                 Los archivos se asignarán a <strong>${currentEmpresa ? escapeHtml(currentEmpresa.razon_social) : "la empresa elegida"}</strong> / campaña <strong>${currentMedicion ? escapeHtml(currentMedicion.codigo_campana) : "(selección pendiente)"}</strong>.
-                Procesamiento paralelo multi-hilo con verificación de orientación e inmunidad a trasluz.
+                Transferencia segmentada resistente a cortes de red y procesamiento paralelo multi-hilo con verificación de orientación e inmunidad a trasluz.
               </p>
+              <div id="op-selected-summary" style="margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--brand-primary, #2563eb); display: none;"></div>
             </div>
           </div>
           <div class="op-controls-row">
-            <input type="file" id="op-file-input" accept="application/pdf,application/zip,.zip" multiple />
+            <input type="file" id="op-file-input" accept="application/pdf,application/zip,.pdf,.zip" multiple />
             <button type="submit" class="btn-primary btn-large" id="btn-op-submit" ${ctxReady ? "" : "disabled"}>
               ${svgIcon("upload", 16)}
               <span>Iniciar Lectura e Ingesta Masiva</span>
@@ -192,16 +193,57 @@ export async function renderOperadorView(container, state, callbacks = {}) {
   const btnRefresh = container.querySelector("#btn-op-refresh");
   if (btnRefresh) btnRefresh.onclick = loadQcCasos;
 
-  // Subida de Archivos
+  // Subida de Archivos con soporte Drag & Drop y progreso de transferencia por bloques
   const formUpload = container.querySelector("#op-upload-form");
   const fileInput = container.querySelector("#op-file-input");
   const progressShelf = container.querySelector("#op-progress-container");
   const btnSubmit = container.querySelector("#btn-op-submit");
+  const selectedSummary = container.querySelector("#op-selected-summary");
+  let droppedFiles = null;
+
+  const updateSelectedSummary = (fileList) => {
+    const arr = Array.from(fileList || []);
+    if (!selectedSummary) return;
+    if (!arr.length) {
+      selectedSummary.style.display = "none";
+      selectedSummary.textContent = "";
+      return;
+    }
+    const totalMb = (arr.reduce((acc, f) => acc + (f.size || 0), 0) / (1024 * 1024)).toFixed(1);
+    selectedSummary.style.display = "block";
+    selectedSummary.textContent = `${arr.length} archivo(s) seleccionado(s) (${totalMb} MB listos para cargar)`;
+  };
+
+  if (fileInput) {
+    fileInput.onchange = () => {
+      droppedFiles = null;
+      updateSelectedSummary(fileInput.files);
+    };
+  }
 
   if (formUpload) {
+    formUpload.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      formUpload.classList.add("drag-active");
+    });
+    formUpload.addEventListener("dragleave", () => {
+      formUpload.classList.remove("drag-active");
+    });
+    formUpload.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      formUpload.classList.remove("drag-active");
+      if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length) {
+        droppedFiles = ev.dataTransfer.files;
+        try {
+          fileInput.files = ev.dataTransfer.files;
+        } catch (_e) {}
+        updateSelectedSummary(droppedFiles);
+      }
+    });
+
     formUpload.onsubmit = async (ev) => {
       ev.preventDefault();
-      const files = fileInput.files;
+      const files = (droppedFiles && droppedFiles.length) ? droppedFiles : fileInput.files;
       if (!ctxReady || !activeMedicionId) {
         showToast("Seleccione empresa y campaña antes de digitalizar. Los PDF no deben mezclarse.", "error");
         return;
@@ -217,7 +259,7 @@ export async function renderOperadorView(container, state, callbacks = {}) {
       progressShelf.innerHTML = `
         <div class="progress-bar-wrap">
           <div class="progress-label-row">
-            <span>Iniciando extracción y reordenamiento ADF...</span>
+            <span>Subiendo archivos al servidor (0%)...</span>
             <span class="progress-pct">0%</span>
           </div>
           <div class="progress-track"><div class="progress-fill" style="width: 0%;"></div></div>
@@ -225,8 +267,21 @@ export async function renderOperadorView(container, state, callbacks = {}) {
       `;
 
       try {
-        const uploadRes = await uploadBatch(files, activeMedicionId);
+        const uploadRes = await uploadBatch(files, activeMedicionId, (upProg) => {
+          const upPct = Math.round(upProg.percent || 0);
+          progressShelf.innerHTML = `
+            <div class="progress-bar-wrap">
+              <div class="progress-label-row">
+                <span>Subiendo archivos al servidor: ${upProg.filesUploaded} de ${upProg.totalFiles} (${escapeHtml(upProg.currentFileName || "")})</span>
+                <span class="progress-pct">${upPct}%</span>
+              </div>
+              <div class="progress-track"><div class="progress-fill" style="width: ${upPct}%;"></div></div>
+            </div>
+          `;
+        });
         fileInput.value = "";
+        droppedFiles = null;
+        updateSelectedSummary([]);
         showToast(`Lote iniciado: ${uploadRes.total} cuadernillos en proceso`, "info");
 
         subscribeBatchEvents(

@@ -351,6 +351,9 @@ function renderTabDobles(caso) {
       const cropHtml = a.crop
         ? `<div class="crop-container"><img src="/media/${a.crop}" alt="Recorte de celda manuscrita" /></div>`
         : `<p class="no-crop">Recorte visual no disponible</p>`;
+      const hasAiHint = !isDone && (a.ia_motivo || (a.ia_sugerencia !== null && a.ia_sugerencia !== undefined));
+      const sugLabel = a.ia_sugerencia !== null && a.ia_sugerencia !== undefined && tags[a.ia_sugerencia] ? `Posible opción limpia: <strong>${escapeHtml(tags[a.ia_sugerencia])}</strong>.` : "";
+      const aiHintHtml = hasAiHint ? `<div class="amb-ai-hint" style="display:flex;align-items:flex-start;gap:8px;padding:8px 10px;margin:6px 0;border-radius:6px;background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.22);font-size:0.82rem;line-height:1.35;"><span style="flex-shrink:0;margin-top:1px;">${svgIcon("cpu", 14)}</span><span><strong>Apoyo IA (no vinculante):</strong> ${escapeHtml(a.ia_motivo || "Revisión visual de trazos.")} ${sugLabel} <em>Confirme manualmente abajo.</em></span></div>` : "";
 
       return `
       <article class="amb-card ${isDone ? "resolved" : "pending"}">
@@ -366,6 +369,7 @@ function renderTabDobles(caso) {
             ? `<div class="amb-audit">${svgIcon("check", 14)} <span>Resuelto por <strong>${escapeHtml(a.decidido_por)}</strong>: <em>${tags[a.decision]}</em></span></div>`
             : `<div class="amb-alert">El respondiente marcó varias casillas. Seleccione la opción válida:</div>`
         }
+        ${aiHintHtml}
         ${cropHtml}
         <div class="likert-btn-group">${btnsHtml}</div>
       </article>

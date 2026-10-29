@@ -21,17 +21,17 @@ import {
   saveDatos,
   subscribeBatchEvents,
   uploadBatch,
-} from "./js/api.js?v=4.0";
+} from "./js/api.js?v=4.8";
 import { renderAuthBar } from "./js/components/authBar.js?v=3.1";
-import { renderBatchProgress } from "./js/components/batchProgress.js?v=2.2";
+import { renderBatchProgress } from "./js/components/batchProgress.js?v=4.8";
 import { renderCaseDetail } from "./js/components/caseDetail.js?v=2.2";
 import { renderCaseList } from "./js/components/caseList.js?v=2.2";
 import { renderInformeView } from "./js/components/informeView.js?v=3.2";
 import { renderStats } from "./js/components/stats.js?v=2.2";
 import { getDefaultViewForRole, renderRoleNav } from "./js/components/roleNav.js?v=4.1";
-import { renderAdminView } from "./js/components/adminView.js?v=4.1";
-import { renderOperadorView } from "./js/components/operadorView.js?v=4.1";
-import { renderEtiquetasView } from "./js/components/etiquetasView.js?v=4.3";
+import { renderAdminView } from "./js/components/adminView.js?v=4.8";
+import { renderOperadorView } from "./js/components/operadorView.js?v=4.8";
+import { renderEtiquetasView } from "./js/components/etiquetasView.js?v=4.8";
 import { readSavedContext, saveContext } from "./js/contextStore.js?v=3.5";
 import { renderClienteView } from "./js/components/clienteView.js?v=3.2";
 import { renderHomePsico } from "./js/components/homePsico.js?v=3.0";
@@ -337,16 +337,67 @@ domFilterBtns.forEach((btn) => {
   };
 });
 
-// Subida de Lote y SSE asociada a la campaña activa
+// Subida de Lote y SSE asociada a la campaña activa (con soporte Drag & Drop y progreso de subida)
+let mainDroppedFiles = null;
+if (domUploadPanel && domFileInput) {
+  domUploadPanel.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    domUploadPanel.classList.add("drag-active");
+  });
+  domUploadPanel.addEventListener("dragleave", () => {
+    domUploadPanel.classList.remove("drag-active");
+  });
+  domUploadPanel.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    domUploadPanel.classList.remove("drag-active");
+    if (ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files.length) {
+      mainDroppedFiles = ev.dataTransfer.files;
+      try {
+        domFileInput.files = ev.dataTransfer.files;
+      } catch (_e) {}
+      showToast(`${mainDroppedFiles.length} archivo(s) listos para procesar`, "info");
+    }
+  });
+  domFileInput.addEventListener("change", () => {
+    mainDroppedFiles = null;
+  });
+}
+
 if (domUploadForm) {
   domUploadForm.onsubmit = async (ev) => {
     ev.preventDefault();
-    const files = domFileInput.files;
-    if (!files || !files.length) return;
+    const files = (mainDroppedFiles && mainDroppedFiles.length) ? mainDroppedFiles : domFileInput.files;
+    if (!files || !files.length) {
+      showToast("Seleccione o arrastre al menos un archivo PDF o ZIP.", "warning");
+      return;
+    }
 
     try {
-      const uploadRes = await uploadBatch(files, state.activeMedicionId);
+      setState({
+        activeJob: {
+          job_id: "uploading",
+          total: files.length,
+          completed: 0,
+          status: "uploading",
+          percent: 0,
+          current_file: files[0]?.name || "",
+        },
+      });
+
+      const uploadRes = await uploadBatch(files, state.activeMedicionId, (upProg) => {
+        setState({
+          activeJob: {
+            job_id: "uploading",
+            total: upProg.totalFiles,
+            completed: upProg.filesUploaded,
+            status: "uploading",
+            percent: upProg.percent,
+            current_file: upProg.currentFileName || "",
+          },
+        });
+      });
       domFileInput.value = "";
+      mainDroppedFiles = null;
 
       setState({
         activeJob: {
@@ -374,7 +425,8 @@ if (domUploadForm) {
         }
       );
     } catch (e) {
-      alert("Error iniciando subida masiva: " + e.message);
+      setState({ activeJob: null });
+      showToast("Error iniciando subida masiva: " + e.message, "error");
     }
   };
 }

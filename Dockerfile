@@ -48,6 +48,11 @@ RUN pip install --upgrade pip setuptools wheel && \
 RUN python -c "from rapidocr_onnxruntime import RapidOCR; import numpy as np; r = RapidOCR(); r(np.zeros((100, 100, 3), dtype=np.uint8))"
 
 # Copiar código fuente y recursos
+ENV OMP_THREAD_LIMIT=1 \
+    OMP_NUM_THREADS=1 \
+    ONNXRUNTIME_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2
 COPY src/ ./src/
 COPY app/ ./app/
 COPY run.py .

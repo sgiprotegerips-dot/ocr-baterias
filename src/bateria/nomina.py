@@ -132,27 +132,57 @@ def parse_ficha_excel(path: Union[str, Path]) -> List[Dict[str, str]]:
         wb.close()
 
 
+def _name_font_pt(nombre: str) -> float:
+    n = len((nombre or "").strip())
+    if n <= 18:
+        return 5.4
+    if n <= 26:
+        return 4.9
+    if n <= 34:
+        return 4.4
+    if n <= 42:
+        return 3.9
+    return 3.4
+
+
+def _cc_font_pt(cc: str) -> float:
+    n = len((cc or "").strip())
+    if n <= 8:
+        return 6.6
+    if n <= 10:
+        return 6.0
+    if n <= 12:
+        return 5.2
+    return 4.4
+
+
 def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
     pages = []
     for raw in fichas:
         ficha = normalize_ficha(raw)
         payload = encode_compact_payload(ficha)
         png_uri = render_qr_png_data_uri(payload, scale=8, border=1)
-        nombre = label_display_name(ficha["nombre"])
-        forma = ficha["forma"] or "A"
-        nac = ficha.get("fecha_nacimiento") or ficha.get("anio_nacimiento") or ""
+        nombre_full = (ficha.get("nombre") or "SIN NOMBRE").strip().upper()
+        cc = (ficha.get("cedula") or "SIN CC").strip()
+        forma = (ficha.get("forma") or "A").strip().upper()
+        nac = ficha.get("fecha_nacimiento") or ficha.get("anio_nacimiento") or ficha.get("fecha_aplicacion") or ""
+        name_pt = _name_font_pt(nombre_full)
+        cc_pt = _cc_font_pt(cc)
         pages.append(
             f"""
 <article class="label">
-  <div class="qr">
-    <img class="qr-img" src="{png_uri}" alt="QR" />
+  <div class="label-top">
+    <div class="qr">
+      <img class="qr-img" src="{png_uri}" alt="QR" />
+    </div>
+    <div class="meta">
+      <div class="forma-badge">FORMA {_html(forma)}</div>
+      <div class="cc-lbl">C.C. / ID:</div>
+      <div class="cc" style="font-size:{cc_pt}pt;">{_html(cc)}</div>
+      <div class="line">{_html(nac)}</div>
+    </div>
   </div>
-  <div class="meta">
-    <div class="line" style="font-weight:700;font-size:5.6pt;">FORMA { _html(forma) }</div>
-    <div class="cc">CC { _html(ficha["cedula"]) }</div>
-    <div class="name">{_html(nombre)}</div>
-    <div class="line" style="font-size:4.6pt;color:#444;">{ _html(nac) }</div>
-  </div>
+  <div class="name" style="font-size:{name_pt}pt;">{_html(nombre_full)}</div>
 </article>
 """
         )
@@ -191,11 +221,9 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       max-height: 20mm;
       box-sizing: border-box;
       display: flex;
-      flex-direction: row;
-      align-items: center;
-      justify-content: flex-start;
-      gap: 1mm;
-      padding: 1.5mm 1mm;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 0.5mm 0.7mm;
       page-break-inside: avoid;
       break-inside: avoid;
       page-break-after: always;
@@ -207,18 +235,26 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       page-break-after: avoid;
       break-after: avoid;
     }}
+    .label-top {{
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 0.7mm;
+      height: 14mm;
+      max-height: 14mm;
+    }}
     .qr {{
-      width: 17.5mm;
-      height: 17.5mm;
-      flex: 0 0 17.5mm;
+      width: 13.8mm;
+      height: 13.8mm;
+      flex: 0 0 13.8mm;
       display: flex;
       align-items: center;
       justify-content: center;
       background: #fff;
     }}
     .qr-img {{
-      width: 17.5mm;
-      height: 17.5mm;
+      width: 13.8mm;
+      height: 13.8mm;
       display: block;
       image-rendering: pixelated;
       image-rendering: -moz-crisp-edges;
@@ -229,35 +265,76 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
       min-width: 0;
       display: flex;
       flex-direction: column;
-      justify-content: center;
-      gap: 0.3mm;
-      line-height: 1.15;
+      justify-content: flex-start;
+      gap: 0.25mm;
+      line-height: 1.1;
       overflow: hidden;
+      padding-top: 0.2mm;
     }}
-    .name {{
-      font-size: 4.8pt;
-      font-weight: 700;
-      text-transform: uppercase;
+    .forma-badge {{
+      background: #000;
+      color: #fff;
+      font-size: 5.8pt;
+      font-weight: 800;
+      text-align: center;
+      padding: 0.35mm 0.4mm;
+      border-radius: 0.3mm;
       white-space: nowrap;
-      overflow: hidden;
-      color: #000;
-      letter-spacing: -0.01em;
+      letter-spacing: 0.01em;
+    }}
+    .cc-lbl {{
+      font-size: 4.1pt;
+      font-weight: 700;
+      color: #333;
+      margin-top: 0.3mm;
+      white-space: nowrap;
     }}
     .cc {{
-      font-size: 5.0pt;
-      font-weight: 700;
+      font-size: 6.0pt;
+      font-weight: 800;
       white-space: nowrap;
       overflow: hidden;
       color: #000;
       letter-spacing: -0.02em;
+      line-height: 1.05;
     }}
     .line {{
-      font-size: 5.4pt;
-      font-weight: 700;
+      font-size: 4.1pt;
+      font-weight: 600;
       white-space: nowrap;
+      overflow: hidden;
+      color: #444;
+      border-top: 0.15mm solid #ccc;
+      padding-top: 0.2mm;
+      margin-top: 0.2mm;
+    }}
+    .name {{
+      width: 100%;
+      font-size: 4.8pt;
+      font-weight: 800;
+      text-transform: uppercase;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.08;
+      max-height: 5.0mm;
       overflow: hidden;
       color: #000;
       letter-spacing: -0.01em;
+    }}
+
+    @media screen {{
+      html, body {{
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }}
+      .label {{
+        transform: scale(1.9);
+        transform-origin: center center;
+      }}
     }}
 
     @media print {{
@@ -269,12 +346,12 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
         overflow: hidden !important;
       }}
       .label {{
+        transform: none !important;
         width: 30mm !important;
         height: 20mm !important;
         max-width: 30mm !important;
         max-height: 20mm !important;
-        padding: 1.2mm 1mm !important;
-        gap: 0.8mm !important;
+        padding: 0.5mm 0.7mm !important;
         page-break-inside: avoid !important;
         break-inside: avoid !important;
         page-break-after: always !important;
@@ -284,18 +361,11 @@ def render_labels_html(fichas: Iterable[Dict[str, Any]]) -> str:
         page-break-after: avoid !important;
         break-after: avoid !important;
       }}
-      .qr {{
-        width: 17.5mm !important;
-        height: 17.5mm !important;
-        flex: 0 0 17.5mm !important;
+      .qr, .qr-img {{
+        width: 13.8mm !important;
+        height: 13.8mm !important;
+        flex: 0 0 13.8mm !important;
       }}
-      .qr-img {{
-        width: 17.5mm !important;
-        height: 17.5mm !important;
-      }}
-      .name {{ font-size: 4.8pt !important; }}
-      .cc {{ font-size: 5.0pt !important; }}
-      .line {{ font-size: 5.4pt !important; }}
     }}
   </style>
 </head>

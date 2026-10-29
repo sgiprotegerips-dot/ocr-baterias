@@ -146,6 +146,30 @@ class EmpresaIn(BaseModel):
     telefono: Optional[str] = None
 
 
+class EmpresaUpdateIn(BaseModel):
+    nit: Optional[str] = None
+    digito_verificacion: Optional[str] = None
+    razon_social: Optional[str] = None
+    sector_economico: Optional[str] = None
+    sector: Optional[str] = None
+    actividad_economica: Optional[str] = None
+    codigo_ciiu: Optional[str] = None
+    ciudad: Optional[str] = None
+    direccion: Optional[str] = None
+    representante_legal: Optional[str] = None
+    contacto_nombre: Optional[str] = None
+    contacto_email: Optional[str] = None
+    email_contacto: Optional[str] = None
+    contacto_telefono: Optional[str] = None
+    telefono: Optional[str] = None
+    psicologa_responsable_id: Optional[str] = None
+    activo: Optional[bool] = None
+    portal_nombre: Optional[str] = None
+    portal_email: Optional[str] = None
+    portal_password: Optional[str] = None
+    portal_activo: Optional[bool] = None
+
+
 class MedicionIn(BaseModel):
     empresa_id: Optional[str] = None
     codigo_campana: Optional[str] = None
@@ -457,7 +481,8 @@ def api_get_empresas(current_user: AuthUser):
     """Retorna las empresas visibles según el rol en sesión."""
     session = SyncSessionLocal()
     try:
-        query = _scope_empresa_query(session.query(Empresa).filter_by(activo=True), current_user)
+        base_q = session.query(Empresa) if current_user.rol == "admin" else session.query(Empresa).filter_by(activo=True)
+        query = _scope_empresa_query(base_q, current_user)
         empresas = query.order_by(Empresa.razon_social).all()
         return [e.to_dict() for e in empresas]
     finally:
@@ -521,6 +546,155 @@ def api_get_empresa(empresa_id: str, current_user: AuthUser):
             raise HTTPException(status_code=404, detail="Empresa no encontrada")
         if current_user.rol == "cliente_empresa" and current_user.empresa_id != empresa.id:
             raise HTTPException(status_code=403, detail="Acceso denegado a esta empresa.")
+        return empresa.to_dict()
+    finally:
+        session.close()
+
+
+@app.put("/api/empresas/{empresa_id}")
+def api_update_empresa(empresa_id: str, body: EmpresaUpdateIn, current_user: StaffUser):
+    """Modifica todos los datos de la empresa cliente, incluyendo su contacto SST,
+    psicóloga responsable y credenciales del usuario de acceso al portal SST.
+    """
+    session = SyncSessionLocal()
+    try:
+        empresa = session.query(Empresa).filter_by(id=empresa_id).first()
+        if not empresa:
+            raise HTTPException(status_code=404, detail="Empresa no encontrada")
+
+        datos_anteriores = {
+            "nit": empresa.nit,
+            "digito_verificacion": empresa.digito_verificacion,
+            "razon_social": empresa.razon_social,
+            "ciudad": empresa.ciudad,
+            "contacto_email": empresa.contacto_email,
+            "activo": empresa.activo,
+        }
+
+        if body.nit is not None and body.nit.strip():
+            raw_nit = body.nit.replace(".", "").strip()
+            if "-" in raw_nit:
+                parts = raw_nit.split("-", 1)
+                clean_nit = parts[0].strip()
+                dv = parts[1].strip() or (body.digito_verificacion or empresa.digito_verificacion or "0").strip()
+            else:
+                clean_nit = raw_nit
+                dv = (body.digito_verificacion or empresa.digito_verificacion or "0").strip()
+
+            dup = session.query(Empresa).filter(Empresa.nit == clean_nit, Empresa.id != empresa.id).first()
+            if dup:
+                raise HTTPException(status_code=400, detail=f"Ya existe otra empresa registrada con el NIT {clean_nit}")
+            empresa.nit = clean_nit
+            empresa.digito_verificacion = dv[:2]
+        elif body.digito_verificacion is not None:
+            empresa.digito_verificacion = (body.digito_verificacion.strip() or "0")[:2]
+
+        if body.razon_social is not None and body.razon_social.strip():
+            empresa.razon_social = body.razon_social.strip()
+
+        sec = body.sector_economico if body.sector_economico is not None else body.sector
+        if sec is not None:
+            empresa.sector_economico = sec.strip() or None
+
+        ciiu = body.codigo_ciiu if body.codigo_ciiu is not None else body.actividad_economica
+        if ciiu is not None:
+            empresa.codigo_ciiu = ciiu.strip()[:20] or None
+
+        if body.ciudad is not None:
+            empresa.ciudad = body.ciudad.strip() or None
+
+        if body.direccion is not None:
+            empresa.direccion = body.direccion.strip() or None
+
+        cnom = body.contacto_nombre if body.contacto_nombre is not None else body.representante_legal
+        if cnom is not None:
+            empresa.contacto_nombre = cnom.strip() or None
+
+        cmail = body.contacto_email if body.contacto_email is not None else body.email_contacto
+        if cmail is not None:
+            empresa.contacto_email = cmail.strip() or None
+
+        ctel = body.contacto_telefono if body.contacto_telefono is not None else body.telefono
+        if ctel is not None:
+            empresa.contacto_telefono = ctel.strip() or None
+
+        if body.psicologa_responsable_id is not None:
+            pid = body.psicologa_responsable_id.strip()
+            if pid:
+                psico = session.query(Usuario).filter_by(id=pid).first()
+                if not psico:
+                    raise HTTPException(status_code=400, detail="La psicóloga responsable seleccionada no existe.")
+                empresa.psicologa_responsable_id = psico.id
+            else:
+                empresa.psicologa_responsable_id = None
+
+        if body.activo is not None:
+            empresa.activo = bool(body.activo)
+
+        # Actualizar o crear usuario portal SST asociado al cliente
+        portal_user = (
+            session.query(Usuario)
+            .filter_by(empresa_id=empresa.id, rol="cliente_empresa")
+            .order_by(Usuario.created_at.asc())
+            .first()
+        )
+        p_email = (body.portal_email or "").strip().lower() if body.portal_email is not None else None
+        p_nombre = (body.portal_nombre or "").strip() if body.portal_nombre is not None else None
+        p_pass = (body.portal_password or "").strip() if body.portal_password is not None else None
+
+        if portal_user:
+            if p_email:
+                dup_u = session.query(Usuario).filter(Usuario.email == p_email, Usuario.id != portal_user.id).first()
+                if dup_u:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"El correo {p_email} ya está asignado a otro usuario del sistema.",
+                    )
+                portal_user.email = p_email
+            if p_nombre:
+                portal_user.nombre_completo = p_nombre
+            if p_pass:
+                portal_user.password_hash = hash_password(p_pass)
+            if body.portal_activo is not None:
+                portal_user.activo = bool(body.portal_activo)
+        elif p_email:
+            dup_u = session.query(Usuario).filter_by(email=p_email).first()
+            if dup_u:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El correo {p_email} ya está asignado a otro usuario del sistema.",
+                )
+            nuevo_portal = Usuario(
+                email=p_email,
+                password_hash=hash_password(p_pass or "Cliente2026!"),
+                nombre_completo=p_nombre or empresa.contacto_nombre or f"Gestor SST {empresa.razon_social}",
+                rol="cliente_empresa",
+                empresa_id=empresa.id,
+                activo=True if body.portal_activo is None else bool(body.portal_activo),
+            )
+            session.add(nuevo_portal)
+
+        session.flush()
+        session.add(
+            AuditLog(
+                usuario_id=current_user.id if current_user else None,
+                accion="ACTUALIZAR_EMPRESA",
+                entidad_tipo="EMPRESA",
+                entidad_id=empresa.id,
+                datos_anteriores=datos_anteriores,
+                datos_nuevos={
+                    "nit": empresa.nit,
+                    "digito_verificacion": empresa.digito_verificacion,
+                    "razon_social": empresa.razon_social,
+                    "ciudad": empresa.ciudad,
+                    "contacto_email": empresa.contacto_email,
+                    "activo": empresa.activo,
+                    "portal_email": p_email,
+                },
+            )
+        )
+        session.commit()
+        session.refresh(empresa)
         return empresa.to_dict()
     finally:
         session.close()
@@ -1485,10 +1659,11 @@ async def api_upload(
     current_user: CargaUser,
     files: List[UploadFile] = File(...),
     medicion_id: Optional[str] = Form(None),
+    job_id: Optional[str] = Form(None),
+    auto_start: bool = Form(True),
 ):
-    """Carga masiva de cuadernillos asociada a una Medición de Empresa."""
-    if len(files) > 1000:
-        return {"error": "Máximo 1000 archivos por lote"}
+    """Carga masiva deslimitada de cuadernillos en streaming asociada a una Medición."""
+    import shutil
 
     nit = None
     codigo = None
@@ -1506,36 +1681,60 @@ async def api_upload(
         finally:
             session.close()
 
+    base_upload_dir = (
+        ensure_campaign_dirs(nit, codigo) / "uploads"
+        if nit and codigo
+        else UPLOAD
+    )
+    base_upload_dir.mkdir(parents=True, exist_ok=True)
+
     saved_paths: List[Path] = []
+    chunk_size = 4 * 1024 * 1024  # 4 MB streaming buffer
+
     for f in files:
         fname = f.filename or f"upload_{uuid.uuid4().hex[:8]}.pdf"
-        content = await f.read()
+        safe_name = os.path.basename(fname)
 
-        if fname.lower().endswith(".zip"):
-            zip_target_dir = (
-                ensure_campaign_dirs(nit, codigo) / "uploads" / f"zip_{uuid.uuid4().hex[:8]}"
-                if nit and codigo
-                else UPLOAD / f"zip_{uuid.uuid4().hex[:8]}"
-            )
+        if safe_name.lower().endswith(".zip"):
+            zip_target_dir = base_upload_dir / f"zip_{uuid.uuid4().hex[:8]}"
             zip_target_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                for z_info in zf.infolist():
-                    if z_info.is_dir():
-                        continue
-                    safe_name = os.path.basename(z_info.filename)
-                    if safe_name.lower().endswith(".pdf") and not safe_name.startswith("."):
-                        extracted_dest = zip_target_dir / safe_name
-                        with zf.open(z_info) as src, open(extracted_dest, "wb") as dst:
-                            dst.write(src.read())
-                        saved_paths.append(extracted_dest)
+            tmp_zip_path = zip_target_dir / "_archive.zip"
+            try:
+                with open(tmp_zip_path, "wb") as dst_zip:
+                    while True:
+                        chunk = await f.read(chunk_size)
+                        if not chunk:
+                            break
+                        dst_zip.write(chunk)
+                with zipfile.ZipFile(tmp_zip_path) as zf:
+                    for z_info in zf.infolist():
+                        if z_info.is_dir():
+                            continue
+                        member_name = os.path.basename(z_info.filename)
+                        if member_name.lower().endswith(".pdf") and not member_name.startswith("."):
+                            extracted_dest = zip_target_dir / member_name
+                            if extracted_dest.exists():
+                                extracted_dest = zip_target_dir / f"{extracted_dest.stem}_{uuid.uuid4().hex[:6]}.pdf"
+                            with zf.open(z_info) as src, open(extracted_dest, "wb") as dst:
+                                shutil.copyfileobj(src, dst, length=chunk_size)
+                            saved_paths.append(extracted_dest)
+            finally:
+                try:
+                    if tmp_zip_path.exists():
+                        tmp_zip_path.unlink()
+                except Exception:
+                    pass
         else:
-            if nit and codigo:
-                dest = save_upload(nit, codigo, fname, content)
-            else:
-                safe_name = os.path.basename(fname)
-                dest = UPLOAD / (safe_name if safe_name.lower().endswith(".pdf") else f"{safe_name}.pdf")
-                dest.write_bytes(content)
+            dest_name = safe_name if safe_name.lower().endswith(".pdf") else f"{safe_name}.pdf"
+            dest = base_upload_dir / dest_name
+            with open(dest, "wb") as dst_pdf:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    dst_pdf.write(chunk)
             saved_paths.append(dest)
+        await f.close()
 
     if not saved_paths:
         raise HTTPException(
@@ -1543,17 +1742,30 @@ async def api_upload(
             detail="No se encontraron archivos PDF válidos en los elementos cargados.",
         )
 
-    job = batch_manager.create_batch(
-        saved_paths, out_dir=OUT, casos_dir=CASOS, medicion_id=medicion_id
-    )
-    loop = asyncio.get_event_loop()
-    batch_manager.start_batch_async(job, loop)
+    job = None
+    if job_id:
+        job = batch_manager.append_to_batch(job_id, saved_paths)
+
+    if not job:
+        job = batch_manager.create_batch(
+            saved_paths, out_dir=OUT, casos_dir=CASOS, medicion_id=medicion_id
+        )
+
+    if auto_start:
+        loop = asyncio.get_event_loop()
+        batch_manager.start_batch_async(job, loop)
 
     return {
         "job_id": job.job_id,
-        "total": len(saved_paths),
+        "total": job.total,
+        "chunk_saved": len(saved_paths),
+        "started": bool(auto_start),
         "medicion_id": medicion_id,
-        "message": f"Iniciado procesamiento masivo de {len(saved_paths)} cuadernillos",
+        "message": (
+            f"Iniciado procesamiento masivo de {job.total} cuadernillos"
+            if auto_start
+            else f"Cargados {len(saved_paths)} cuadernillos ({job.total} acumulados en el lote)"
+        ),
     }
 
 
@@ -1604,16 +1816,19 @@ def api_datos(caso_id: str, body: DatosIn, current_user: ClinicoUser):
 
 
 @app.post("/api/casos/{caso_id}/decidir")
-def api_decidir(caso_id: str, body: DecisionIn, current_user: PsicoUser):
+def api_decidir(caso_id: str, body: DecisionIn, current_user: ClinicoUser):
     c = get_caso(CASOS, caso_id)
     if not c:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
 
-    if not body.psicologa.strip():
-        raise HTTPException(status_code=400, detail="Debe indicar el nombre de la psicóloga que decide.")
+    psic_name = (
+        body.psicologa.strip()
+        or (current_user.nombre_completo if current_user else "")
+        or "Auditoría Clínica"
+    )
 
-    c["psicologa"] = body.psicologa.strip()
-    c = aplicar_decision(c, body.amb_id, body.choice, body.psicologa.strip())
+    c["psicologa"] = psic_name
+    c = aplicar_decision(c, body.amb_id, body.choice, psic_name)
     saved = save_caso(CASOS, c)
 
     try:

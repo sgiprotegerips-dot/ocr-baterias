@@ -19,7 +19,10 @@ export function renderBatchProgress(container, jobState, onCancel) {
 
   let statusTitle = "Procesando lote masivo...";
   let statusIcon = "cpu";
-  if (status === "completed") {
+  if (status === "uploading") {
+    statusTitle = "Subiendo archivos al servidor...";
+    statusIcon = "upload";
+  } else if (status === "completed") {
     statusTitle = "Lectura masiva completada exitosamente";
     statusIcon = "check-circle";
   } else if (status === "cancelled") {
@@ -30,6 +33,11 @@ export function renderBatchProgress(container, jobState, onCancel) {
     statusIcon = "alert-circle";
   }
 
+  const detailText =
+    status === "uploading"
+      ? `${completed} de ${total} archivo(s) en transferencia (${percent}%)`
+      : `${completed} de ${total} cuadernillos leídos ${failed > 0 ? `(${failed} fallos)` : ""} · ${elapsed_seconds}s transcurridos`;
+
   container.innerHTML = `
     <div class="batch-card ${status}">
       <div class="batch-info-row">
@@ -38,9 +46,9 @@ export function renderBatchProgress(container, jobState, onCancel) {
             <span class="batch-icon-wrap">${svgIcon(statusIcon, 16)}</span>
             <strong>${statusTitle}</strong>
           </div>
-          <span class="batch-detail">${completed} de ${total} cuadernillos leídos ${failed > 0 ? `(${failed} fallos)` : ""} · ${elapsed_seconds}s transcurridos</span>
+          <span class="batch-detail">${detailText}</span>
         </div>
-        ${!isDone ? `<button type="button" class="btn-cancel-batch btn-sm ghost">Detener Lote</button>` : ""}
+        ${!isDone && status !== "uploading" ? `<button type="button" class="btn-cancel-batch btn-sm ghost">Detener Lote</button>` : ""}
       </div>
 
       <div class="progress-track">
@@ -48,7 +56,7 @@ export function renderBatchProgress(container, jobState, onCancel) {
       </div>
 
       <div class="batch-current-file">
-        ${!isDone && current_file ? `<span>Página actual en lectura: <em>${current_file}</em> (${percent}%)</span>` : ""}
+        ${!isDone && current_file ? `<span>${status === "uploading" ? "Transfiriendo archivo" : "Página actual en lectura"}: <em>${current_file}</em> (${percent}%)</span>` : ""}
       </div>
     </div>
   `;

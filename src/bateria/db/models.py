@@ -102,15 +102,16 @@ class Empresa(Base):
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    mediciones: Mapped[List[Medicion]] = relationship("Medicion", back_populates="empresa", cascade="all, delete-orphan")
+    mediciones: Mapped[List[Medicion]] = relationship("Medicion", back_populates="empresa", cascade="all, delete-orphan", lazy="selectin")
     usuarios_cliente: Mapped[List["Usuario"]] = relationship(
-        "Usuario", back_populates="empresa", foreign_keys="Usuario.empresa_id"
+        "Usuario", back_populates="empresa", foreign_keys="Usuario.empresa_id", lazy="selectin"
     )
     psicologa_responsable: Mapped[Optional["Usuario"]] = relationship(
-        "Usuario", foreign_keys=[psicologa_responsable_id]
+        "Usuario", foreign_keys=[psicologa_responsable_id], lazy="selectin"
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        portal_user = self.usuarios_cliente[0] if self.usuarios_cliente else None
         return {
             "id": self.id,
             "nit": self.nit,
@@ -128,6 +129,10 @@ class Empresa(Base):
             "psicologa_responsable_nombre": (
                 self.psicologa_responsable.nombre_completo if self.psicologa_responsable else None
             ),
+            "portal_user_id": portal_user.id if portal_user else None,
+            "portal_nombre": portal_user.nombre_completo if portal_user else None,
+            "portal_email": portal_user.email if portal_user else None,
+            "portal_activo": portal_user.activo if portal_user else True,
             "activo": self.activo,
             "mediciones_count": len(self.mediciones) if self.mediciones else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,

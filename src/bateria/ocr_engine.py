@@ -20,6 +20,10 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# Evitar contención de spinlocks OpenMP en procesos paralelos de Tesseract 5 en Linux
+os.environ["OMP_THREAD_LIMIT"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import cv2
 import numpy as np
 import pytesseract
@@ -121,7 +125,12 @@ def run_rapid_ocr(img: np.ndarray) -> Optional[str]:
     if engine is None:
         return None
     try:
-        res, _ = engine(img)
+        work_img = img
+        h, w = img.shape[:2]
+        if max(h, w) > 1200:
+            sc = 1200.0 / float(max(h, w))
+            work_img = cv2.resize(img, (max(1, int(w * sc)), max(1, int(h * sc))), interpolation=cv2.INTER_AREA)
+        res, _ = engine(work_img)
         if res:
             return "\n".join(item[1] for item in res if item and len(item) > 1)
     except Exception as e:
@@ -210,26 +219,27 @@ def ocr_full_text(img: np.ndarray, psm: int = 6) -> str:
 
 def ocr_printed_text(img: np.ndarray, psm: int = 6) -> str:
     """OCR ultrarrápido optimizado para texto impreso estándar (encabezados, títulos, pies de página).
-    Usa Tesseract local primero (latencia de 20-30ms vs 1200ms de redes neuronales profundas).
-    Si no detecta texto o falla, recurre en cascada a ocr_full_text (RapidOCR / Vision / Textract).
+    Usa Tesseract local con OMP_THREAD_LIMIT=1 (latencia de 15-30ms).
+    Descarta instantáneamente franjas en blanco sin invocar subprocesos ni redes neuronales.
     """
-    try:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-        txt = pytesseract.image_to_string(gray, lang="spa", config=f"--psm {psm}").strip()
-        if len(txt) > 0:
-            return txt
-    except Exception:
-        pass
+    if img is None or img.size == 0:
+        return ""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    # Si la franja es papel blanco puro (< 0.03% de píxeles oscuros), no hay texto impreso
+    if float(np.mean(gray < 200)) < 0.0003:
+        return ""
 
     try:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-        txt = pytesseract.image_to_string(gray, config=f"--psm {psm}").strip()
-        if len(txt) > 0:
-            return txt
+        return pytesseract.image_to_string(
+            gray, lang="spa", config=f"--psm {psm}", timeout=4
+        ).strip()
     except Exception:
-        pass
-
-    return ocr_full_text(img, psm=psm)
+        try:
+            return pytesseract.image_to_string(
+                gray, config=f"--psm {psm}", timeout=4
+            ).strip()
+        except Exception:
+            return ocr_full_text(img, psm=psm)
 
 
 def ocr_digits_only(img: np.ndarray) -> str:
@@ -326,37 +336,61 @@ def get_available_engines() -> Dict[str, object]:
     easy_ok = get_easy_ocr() is not None
 
     pref = os.getenv("OCR_ENGINE", "auto").lower()
-    if pref == "auto":
-        if _IS_MAC and apple_ok:
-            active = "apple_vision"
-        elif aws_ok:
-            active = "aws_textract"
-        elif rapid_ok:
-            active = "rapid_ocr_onnx"
-        elif easy_ok:
-            active = "easy_ocr"
-        elif tesseract_ok:
-            active = "tesseract"
+    if pref in ("auto", "rapidocr", "rapid_ocr_onnx"):
+        if pref == "auto":
+            if _IS_MAC and apple_ok:
+                active = "apple_vision"
+            elif aws_ok:
+                active = "aws_textract"
+            elif rapid_ok:
+                active = "rapid_ocr_onnx"
+            elif easy_ok:
+                active = "easy_ocr"
+            elif tesseract_ok:
+                active = "tesseract"
+            else:
+                active = "none"
         else:
-            active = "none"
+            active = "rapid_ocr_onnx" if rapid_ok else ("tesseract" if tesseract_ok else pref)
     else:
         active = pref
+
+    try:
+        from .ai_fallback import get_ai_model, get_ai_telemetry, is_ai_fallback_enabled
+
+        ai_ok = is_ai_fallback_enabled()
+        ai_model = get_ai_model()
+        ai_stats = get_ai_telemetry()
+    except Exception:
+        ai_ok = False
+        ai_model = ""
+        ai_stats = {}
 
     return {
         "active_engine": active,
         "configured_preference": pref,
         "apple_vision": apple_ok,
+        "apple_vision_available": apple_ok,
         "rapid_ocr_onnx": rapid_ok,
+        "rapid_ocr_available": rapid_ok,
         "tesseract": tesseract_ok,
+        "tesseract_available": tesseract_ok,
         "aws_textract": aws_ok,
+        "aws_textract_available": aws_ok,
         "easy_ocr": easy_ok,
+        "easy_ocr_available": easy_ok,
+        "ai_fallback_available": ai_ok,
+        "ai_fallback_model": ai_model,
+        "ai_fallback_stats": ai_stats,
         "os": platform.system(),
         "arch": platform.machine(),
         "is_linux_ec2": platform.system() == "Linux",
+        "cpu_cores": os.cpu_count() or 4,
+        "workers": int(os.getenv("BATCH_MAX_WORKERS") or os.getenv("WORKERS") or 8),
     }
 
 
-def benchmark_ocr_engines(test_img: Optional[np.ndarray] = None) -> Dict[str, dict]:
+def benchmark_ocr_engines(test_img: Optional[np.ndarray] = None) -> Dict[str, object]:
     """Ejecuta una prueba comparativa de rendimiento (latencia en ms y texto) en los motores disponibles."""
     import time
 
@@ -405,4 +439,21 @@ def benchmark_ocr_engines(test_img: Optional[np.ndarray] = None) -> Dict[str, di
         dt = (time.perf_counter() - t0) * 1000
         results["easy_ocr"] = {"latency_ms": round(dt, 2), "sample": txt[:80], "ok": bool(txt)}
 
-    return results
+    eng_info = get_available_engines()
+    active_key = str(eng_info.get("active_engine") or "rapid_ocr_onnx")
+    primary_bench = (
+        results.get(active_key)
+        or results.get("rapid_ocr_onnx")
+        or results.get("tesseract")
+        or {}
+    )
+    sample_str = str(primary_bench.get("sample") or "")
+
+    return {
+        "active_engine": active_key,
+        "elapsed_ms": float(primary_bench.get("latency_ms") or 0.0),
+        "extracted_chars": len(sample_str),
+        "sample": sample_str,
+        "engines": results,
+        **results,
+    }

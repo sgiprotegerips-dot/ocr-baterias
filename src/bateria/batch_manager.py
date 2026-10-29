@@ -60,15 +60,15 @@ class BatchManager:
                 try:
                     self.max_workers = max(1, int(env_w))
                 except ValueError:
-                    self.max_workers = 4
+                    self.max_workers = 8
             else:
-                self.max_workers = min(8, max(2, (os.cpu_count() or 2)))
+                self.max_workers = min(16, max(4, (os.cpu_count() or 4) * 2))
         else:
             self.max_workers = max_workers
 
         self.jobs: Dict[str, BatchJob] = {}
         self.executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(2, self.max_workers), thread_name_prefix="bateria-batch"
+            max_workers=max(4, self.max_workers), thread_name_prefix="bateria-batch"
         )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.Lock()
@@ -84,7 +84,7 @@ class BatchManager:
         job_id = uuid.uuid4().hex[:12]
         job = BatchJob(
             job_id=job_id,
-            file_paths=file_paths,
+            file_paths=list(file_paths),
             out_dir=out_dir,
             casos_dir=casos_dir,
             total=len(file_paths),
@@ -93,10 +93,24 @@ class BatchManager:
         self.jobs[job_id] = job
         return job
 
+    def append_to_batch(self, job_id: str, new_paths: List[Path]) -> Optional[BatchJob]:
+        """Agrega archivos adicionales a un lote en preparación antes de su ejecución."""
+        with self._lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                return None
+            job.file_paths.extend(new_paths)
+            job.total = len(job.file_paths)
+            return job
+
     def start_batch_async(self, job: BatchJob, loop: Optional[asyncio.AbstractEventLoop] = None):
         """Inicia la ejecución del lote en el pool de subprocesos."""
-        self._loop = loop
-        job.status = "processing"
+        with self._lock:
+            if job.status == "processing":
+                return
+            self._loop = loop
+            job.status = "processing"
+            job.start_time = time.time()
         self._notify_listeners(job)
         self.executor.submit(self._run_batch, job)
 
@@ -126,35 +140,65 @@ class BatchManager:
         batches_dir = job.out_dir / "batches"
         batches_dir.mkdir(parents=True, exist_ok=True)
 
+        # Pre-cargar nómina de la campaña en memoria para evitar abrir una sesión SQL por cada PDF
+        nomina_cache: Dict[str, dict] = {}
+        if job.medicion_id:
+            try:
+                from .db.session import SyncSessionLocal
+                from .db.models import TrabajadorNomina
+
+                s = SyncSessionLocal()
+                try:
+                    rows = s.query(TrabajadorNomina).filter_by(medicion_id=job.medicion_id).all()
+                    for r in rows:
+                        nomina_cache[str(r.cedula)] = {
+                            "ficha_json": r.ficha_json,
+                            "nombre_completo": r.nombre_completo,
+                            "cargo": r.cargo,
+                            "area": r.area,
+                        }
+                finally:
+                    s.close()
+            except Exception:
+                pass
+
         def _process_single(pdf_path: Path):
             if job.cancelled:
                 return ("cancelled", pdf_path.name, None)
             try:
-                raw_res = process_pdf(pdf_path, out_dir=job.out_dir)
+                with self._lock:
+                    job.current_file = f"{pdf_path.name} — Iniciando lectura"
+                    if job.percent < 5.0:
+                        job.percent = 5.0
+                self._notify_listeners(job)
+
+                def _step_cb(sub_frac: float, step_label: str):
+                    if job.cancelled:
+                        return
+                    with self._lock:
+                        done_count = job.completed + job.failed
+                        overall = ((done_count + max(0.05, min(0.95, sub_frac))) / max(1, job.total)) * 100.0
+                        if overall > job.percent:
+                            job.percent = round(overall, 1)
+                        job.current_file = f"{pdf_path.name} · {step_label}"
+                    self._notify_listeners(job)
+
+                raw_res = process_pdf(pdf_path, out_dir=job.out_dir, on_progress=_step_cb)
                 raw_res["psicologa"] = ""
                 if job.medicion_id:
                     raw_res["medicion_id"] = job.medicion_id
                     ced = (raw_res.get("identidad") or {}).get("id_documento")
                     if ced:
-                        try:
-                            from .db.session import SyncSessionLocal
-                            from .db.models import TrabajadorNomina
-                            s = SyncSessionLocal()
-                            try:
-                                trab = s.query(TrabajadorNomina).filter_by(medicion_id=job.medicion_id, cedula=str(ced)).first()
-                                if trab and trab.ficha_json:
-                                    ident = raw_res.setdefault("identidad", {})
-                                    ident["ficha"] = trab.ficha_json
-                                    if trab.nombre_completo and not ident.get("nombre"):
-                                        ident["nombre"] = trab.nombre_completo
-                                    if trab.cargo and not ident.get("cargo"):
-                                        ident["cargo"] = trab.cargo
-                                    if trab.area and not ident.get("dependencia"):
-                                        ident["dependencia"] = trab.area
-                            finally:
-                                s.close()
-                        except Exception:
-                            pass
+                        trab = nomina_cache.get(str(ced))
+                        if trab and trab.get("ficha_json"):
+                            ident = raw_res.setdefault("identidad", {})
+                            ident["ficha"] = trab["ficha_json"]
+                            if trab.get("nombre_completo") and not ident.get("nombre"):
+                                ident["nombre"] = trab["nombre_completo"]
+                            if trab.get("cargo") and not ident.get("cargo"):
+                                ident["cargo"] = trab["cargo"]
+                            if trab.get("area") and not ident.get("dependencia"):
+                                ident["dependencia"] = trab["area"]
                 saved = save_caso(job.casos_dir, raw_res)
                 return ("ok", pdf_path.name, saved)
             except Exception as e:

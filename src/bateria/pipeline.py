@@ -8,6 +8,13 @@ import cv2
 
 import fitz
 
+from .ai_fallback import (
+    ai_inspect_likert_inconsistency,
+    ai_resolve_identity_inconsistency,
+    ai_resolve_page_inconsistency,
+    is_ai_fallback_enabled,
+    verify_cell_has_real_dark_ink,
+)
 from .classify import classify_page, get_expected_items
 from .ingest import pdf_to_images, sha256_file
 from .ocr_fields import extract_consentimiento, extract_id_and_name, extract_cover_date
@@ -65,14 +72,25 @@ def _bucket(kind: str) -> str | None:
     return None
 
 
-def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
+def process_pdf(path: Path, out_dir: Path | None = None, on_progress=None) -> dict:
     path = Path(path)
+    if callable(on_progress):
+        try:
+            on_progress(0.08, "Renderizando páginas del PDF")
+        except Exception:
+            pass
     raw_images = pdf_to_images(path)
     crops_dir = (Path(out_dir) / "crops") if out_dir else None
     if crops_dir:
         crops_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Clasificación paralela ultra rápida y detección de páginas impresas
+    if callable(on_progress):
+        try:
+            on_progress(0.20, f"Clasificando y orientando {len(raw_images)} páginas (ADF)")
+        except Exception:
+            pass
+
+    # 1. Clasificación paralela ultra rápida y detección de páginas impresas (4 hilos alineados a núcleos físicos)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(raw_images)))) as ex:
             infos = list(ex.map(classify_page, raw_images))
@@ -121,6 +139,55 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
                 item["target_page"] = cand
                 used_pages.add(cand)
 
+    ia_intervenciones: list[dict] = []
+
+    # 2a-IA. Resolución con IA SOLO si alguna página quedó sin clasificar / en colisión en el reordenamiento 1..24
+    unassigned_items = [it for it in classified if it["target_page"] is None]
+    missing_page_nums = set(range(1, 25)) - used_pages
+    # En Forma B la pág. 17 (Jefatura) suele venir vacía; si es la única faltante no constituye inconsistencia
+    needs_page_ai = bool(unassigned_items) and not (
+        forma == "B" and len(unassigned_items) == 1 and missing_page_nums == {17}
+    )
+    if needs_page_ai and is_ai_fallback_enabled():
+        if callable(on_progress):
+            try:
+                on_progress(0.42, f"Verificando con IA {len(unassigned_items)} página(s) con orden incierto")
+            except Exception:
+                pass
+        for it in unassigned_items:
+            ai_pg = ai_resolve_page_inconsistency(it["img"])
+            if not ai_pg:
+                continue
+            rot_need = ai_pg.get("rot_angle_needed", 0)
+            if rot_need == 90:
+                it["img"] = cv2.rotate(it["img"], cv2.ROTATE_90_CLOCKWISE)
+                it["info"]["rot_angle"] = (it["info"].get("rot_angle", 0) + 90) % 360
+            elif rot_need == 180:
+                it["img"] = cv2.rotate(it["img"], cv2.ROTATE_180)
+                it["info"]["rot_angle"] = (it["info"].get("rot_angle", 0) + 180) % 360
+            elif rot_need == 270:
+                it["img"] = cv2.rotate(it["img"], cv2.ROTATE_90_COUNTERCLOCKWISE)
+                it["info"]["rot_angle"] = (it["info"].get("rot_angle", 0) + 270) % 360
+
+            if ai_pg.get("kind") and ai_pg["kind"] != "otra":
+                it["info"]["kind"] = ai_pg["kind"]
+            if ai_pg.get("forma") in ("A", "B") and detected_forma is None:
+                detected_forma = ai_pg["forma"]
+                forma = detected_forma
+
+            cand_p = ai_pg.get("printed_page") or KIND_DEFAULTS.get(it["info"].get("kind"))
+            if cand_p and 1 <= cand_p <= 24 and cand_p not in used_pages:
+                it["target_page"] = cand_p
+                used_pages.add(cand_p)
+                ia_intervenciones.append(
+                    {
+                        "tipo": "reordenamiento_pagina",
+                        "scan_index": it["scan_index"],
+                        "pagina_asignada": cand_p,
+                        "kind": it["info"].get("kind"),
+                    }
+                )
+
     # Asignar páginas no determinadas por proximidad
     for item in classified:
         if item["target_page"] is None:
@@ -158,6 +225,11 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
     ambiguos: list[dict] = []
 
     # 2b. QR de identidad solo en página 1 (sticker 30×20 mm en el consentimiento)
+    if callable(on_progress):
+        try:
+            on_progress(0.55, "Verificando identidad QR y reordenamiento 1..24")
+        except Exception:
+            pass
     qr_hit = detect_identity_qr(classified)
     if qr_hit:
         qr_ident = identity_from_ficha(qr_hit)
@@ -170,6 +242,11 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
             forma = qr_hit["forma"]
 
     # 3. Pre-procesamiento OMR paralelo de todas las tablas Likert del cuadernillo
+    if callable(on_progress):
+        try:
+            on_progress(0.68, f"Leyendo marcas OMR en tablas Likert (Forma {forma})")
+        except Exception:
+            pass
     likert_tasks = []
     for item_data in classified:
         p_no = item_data["target_page"]
@@ -195,15 +272,29 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
                 p_no_res, rows_res = _read_table_task(t)
                 likert_results[p_no_res] = rows_res
 
+    if callable(on_progress):
+        try:
+            on_progress(0.82, "Extrayendo datos de consentimiento e identificación")
+        except Exception:
+            pass
+
     # 4. Procesamiento ordenado página por página
+    page_by_num: dict[int, np.ndarray] = {}
+    cover_cc_p6: str | None = None
+    ai_likert_budget = 10
+
     for item_data in classified:
         p_no = item_data["target_page"]
         img = item_data["img"]
+        if p_no is not None:
+            page_by_num[p_no] = img
         info = item_data["info"]
         kind = info["kind"]
 
-        # Extracción de Consentimiento Informado (Pág 1)
-        if kind == "consentimiento" or p_no == 1:
+        # Extracción de Consentimiento Informado (Pág 1) solo si el QR no aportó cédula y nombre
+        if (kind == "consentimiento" or p_no == 1) and not (
+            qr_hit and identity.get("id_documento") and identity.get("nombre")
+        ):
             cons = extract_consentimiento(img)
             for k in ("nombre", "cargo", "fecha", "dependencia"):
                 if cons.get(k) and not identity.get(k):
@@ -211,13 +302,16 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
             if cons.get("id_documento") and not identity.get("id_documento"):
                 identity["id_documento"] = cons["id_documento"]
 
-        # Extracción de Cédula / ID y Fecha en portadas o ficha (1, 2, 6, 18, 23) como fallback
-        if p_no in (1, 2, 6, 18, 23):
-            if not identity.get("id_documento"):
+        # Extracción de Cédula / ID y Fecha en portadas (pág 6) como fallback rápido
+        if p_no in (2, 6):
+            if not qr_hit:
                 ident = extract_id_and_name(img)
                 if ident.get("id_documento"):
-                    identity["id_documento"] = ident["id_documento"]
-            if not identity.get("fecha") and p_no in (6, 18, 23):
+                    if p_no == 6:
+                        cover_cc_p6 = str(ident["id_documento"]).strip()
+                    if not identity.get("id_documento"):
+                        identity["id_documento"] = ident["id_documento"]
+            if not identity.get("fecha") and not qr_hit and p_no == 6:
                 cov_date = extract_cover_date(img)
                 if cov_date:
                     identity["fecha"] = cov_date
@@ -236,25 +330,113 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
 
             target = {"intra": intra, "extra": extra, "estres": estres}.get(bucket)
             meta = {"intra": intra_meta, "extra": extra_meta, "estres": estres_meta}.get(bucket)
+            page_has_answers = any(r.get("status") in ("ok", "ambiguo") for r in rows)
 
             if target is not None:
+                img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
                 for row in rows:
                     item_idx = row.get("item")
                     if item_idx is None:
                         continue
 
+                    # 4a-IA. Inconsistencia en fila 'vacio' dentro de una página activa:
+                    # Solo consulta IA si la compuerta física Anti-Bleed-Through detecta tinta oscura real (<145)
+                    # cerca del borde de alguna casilla que el padding interno de OpenCV descartó.
+                    if (
+                        row.get("status") == "vacio"
+                        and page_has_answers
+                        and ai_likert_budget > 0
+                        and is_ai_fallback_enabled()
+                    ):
+                        bbox = row.get("row_bbox")
+                        col_offs = row.get("col_offsets") or []
+                        n_ch = int(row.get("n_choices", 5))
+                        if bbox and len(col_offs) >= n_ch + 1:
+                            rx, ry, rw, rh = bbox
+                            cells_with_ink: list[int] = []
+                            for c_i in range(n_ch):
+                                cx0 = max(0, rx + col_offs[c_i])
+                                cx1 = min(img_gray.shape[1], rx + col_offs[c_i + 1])
+                                cy0 = max(0, ry)
+                                cy1 = min(img_gray.shape[0], ry + rh)
+                                if verify_cell_has_real_dark_ink(img_gray[cy0:cy1, cx0:cx1]):
+                                    cells_with_ink.append(c_i)
+
+                            if cells_with_ink:
+                                ai_likert_budget -= 1
+                                row_crop_raw = img[max(0, ry - 4) : min(img.shape[0], ry + rh + 4), max(0, rx) : min(img.shape[1], rx + rw)]
+                                ai_row = ai_inspect_likert_inconsistency(row_crop_raw, col_offs, n_choices=n_ch)
+                                if ai_row:
+                                    act = ai_row.get("marcadas_activas") or []
+                                    tach = ai_row.get("tachadas") or []
+                                    # Regla 4: Si hay doble marca o tachón/corrección, jamás desempatar -> promover a 'ambiguo'
+                                    if ai_row.get("hay_doble_marca") or ai_row.get("hay_tachon") or len(act) >= 2:
+                                        comb_m = sorted(set(act + tach)) or cells_with_ink
+                                        row["status"] = "ambiguo"
+                                        row["marked"] = comb_m
+                                        row["ia_analisis"] = ai_row
+                                        ia_intervenciones.append(
+                                            {
+                                                "tipo": "omr_promovido_ambiguo",
+                                                "bloque": bucket,
+                                                "item": item_idx,
+                                                "marcadas": comb_m,
+                                            }
+                                        )
+                                    elif len(act) == 1 and act[0] in cells_with_ink:
+                                        chosen_c = act[0]
+                                        if ai_row.get("confianza", 0.0) >= 0.88:
+                                            row["status"] = "ok"
+                                            row["choice_index"] = chosen_c
+                                            row["marked"] = [chosen_c]
+                                            row["ia_recuperado"] = True
+                                            ia_intervenciones.append(
+                                                {
+                                                    "tipo": "omr_borde_recuperado",
+                                                    "bloque": bucket,
+                                                    "item": item_idx,
+                                                    "casilla": chosen_c,
+                                                }
+                                            )
+                                        else:
+                                            row["status"] = "ambiguo"
+                                            row["marked"] = [chosen_c]
+                                            row["ia_analisis"] = ai_row
+
                     if row.get("status") == "ambiguo":
                         crop_rel = None
+                        crop_img_for_ai = None
                         bbox = row.get("row_bbox")
-                        if bbox and crops_dir is not None:
+                        if bbox:
                             x, y, w, h = bbox
-                            pad = 8
-                            y0, y1 = max(0, y - pad), min(img.shape[0], y + h + pad)
-                            x0, x1 = max(0, x - pad), min(img.shape[1], x + w + pad)
-                            crop = img[y0:y1, x0:x1]
-                            fname = f"{path.stem}_{bucket}_{item_idx:03d}.jpg"
-                            cv2.imwrite(str(crops_dir / fname), crop)
-                            crop_rel = f"crops/{fname}"
+                            crop_img_for_ai = img[max(0, y - 4) : min(img.shape[0], y + h + 4), max(0, x) : min(img.shape[1], x + w)]
+                            if crops_dir is not None:
+                                pad = 8
+                                y0, y1 = max(0, y - pad), min(img.shape[0], y + h + pad)
+                                x0, x1 = max(0, x - pad), min(img.shape[1], x + w + pad)
+                                crop = img[y0:y1, x0:x1]
+                                fname = f"{path.stem}_{bucket}_{item_idx:03d}.jpg"
+                                cv2.imwrite(str(crops_dir / fname), crop)
+                                crop_rel = f"crops/{fname}"
+
+                        # 4b-IA. Diagnóstico orientativo en doble marca (Regla 4: NUNCA auto-decide, decision=None)
+                        ai_obs = row.get("ia_analisis")
+                        if ai_obs is None and crop_img_for_ai is not None and ai_likert_budget > 0 and is_ai_fallback_enabled():
+                            ai_likert_budget -= 1
+                            ai_obs = ai_inspect_likert_inconsistency(
+                                crop_img_for_ai,
+                                row.get("col_offsets") or [],
+                                n_choices=int(row.get("n_choices", 5)),
+                            )
+                            if ai_obs:
+                                ia_intervenciones.append(
+                                    {
+                                        "tipo": "diagnostico_doble_marca",
+                                        "bloque": bucket,
+                                        "item": item_idx,
+                                        "sugerencia_no_vinculante": ai_obs.get("casilla_sugerida"),
+                                    }
+                                )
 
                         labels = (
                             ["Siempre", "Casi siempre", "Algunas veces", "Casi nunca", "Nunca"]
@@ -273,6 +455,9 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
                                 "crop": crop_rel,
                                 "decision": None,
                                 "decidido_por": None,
+                                "ia_sugerencia": ai_obs.get("casilla_sugerida") if isinstance(ai_obs, dict) else None,
+                                "ia_motivo": ai_obs.get("motivo") if isinstance(ai_obs, dict) else None,
+                                "ia_confianza": ai_obs.get("confianza") if isinstance(ai_obs, dict) else None,
                             }
                         )
                         if meta is not None:
@@ -295,6 +480,44 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
                 "ocr_preview": info.get("ocr_preview"),
             }
         )
+
+    # 4c-IA. Resolución de identidad con IA ESTRICTAMENTE si faltan datos obligatorios o hay discrepancia de cédula
+    p1_cc = str(identity.get("id_documento") or "").strip()
+    cc_conflict = bool(not qr_hit and p1_cc and cover_cc_p6 and p1_cc != cover_cc_p6)
+    missing_ident_fields = [
+        k for k in ("id_documento", "nombre", "cargo", "dependencia", "fecha") if not str(identity.get(k) or "").strip()
+    ]
+    if (missing_ident_fields or cc_conflict) and is_ai_fallback_enabled():
+        if callable(on_progress):
+            try:
+                on_progress(0.90, "Consultando IA ante inconsistencia en datos de identificación")
+            except Exception:
+                pass
+        ai_id = ai_resolve_identity_inconsistency(
+            page_by_num.get(1),
+            page6_img=page_by_num.get(6),
+            page4_img=page_by_num.get(4),
+        )
+        if ai_id:
+            recovered_keys: list[str] = []
+            for k in ("id_documento", "nombre", "cargo", "dependencia", "fecha"):
+                val = ai_id.get(k)
+                if val and (not str(identity.get(k) or "").strip() or (k == "id_documento" and cc_conflict)):
+                    identity[k] = val
+                    recovered_keys.append(k)
+            if ai_id.get("ficha") and not identity.get("ficha"):
+                identity["ficha"] = ai_id["ficha"]
+            if not qr_hit and recovered_keys:
+                identity["fuente"] = "ia_inconsistencia"
+            identity["ia_asistido"] = True
+            if recovered_keys:
+                ia_intervenciones.append(
+                    {
+                        "tipo": "identidad",
+                        "motivo": "conflicto_cedula" if cc_conflict else "campos_faltantes",
+                        "campos_recuperados": recovered_keys,
+                    }
+                )
 
     expected_intra = 123 if forma != "B" else 97
     amb_intra = {a["item"] for a in ambiguos if a["bloque"] == "intra"}
@@ -350,6 +573,7 @@ def process_pdf(path: Path, out_dir: Path | None = None) -> dict:
         "estres": {str(k): v for k, v in sorted(estres.items())},
         "faltantes": {"intra": missing_intra, "extra": missing_extra, "estres": missing_estres},
         "ambiguos": ambiguos,
+        "ia_intervenciones": ia_intervenciones,
         "calidad": {
             "intra_leidos": len(intra) + len(amb_intra),
             "intra_esperados": real_expected_intra,
